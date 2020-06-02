@@ -1,3 +1,5 @@
+import itertools
+import numbers
 import os
 import json
 import mimetypes
@@ -5,6 +7,7 @@ import datetime
 import tiledb
 import tiledb.cloud
 import numpy
+from notebook.services.contents.checkpoints import GenericCheckpointsMixin, Checkpoints
 from notebook.services.contents.filemanager import FileContentsManager
 
 from tornado.web import HTTPError
@@ -18,9 +21,10 @@ NBFORMAT_VERSION = 4
 
 NOTEBOOK_MIME = "application/x-ipynb+json"
 
-S3_PREFIX="s3://tiledb-seth-test/notebooks/"
+S3_PREFIX = "s3://tiledb-seth-test/notebooks/"
 
 TAG_JUPYTER_NOTEBOOK = "__jupyter-notebook"
+
 
 def base_model(path):
     """
@@ -61,6 +65,34 @@ def remove_path_prefix(path_prefix, path):
     return ret
 
 
+class NoOpCheckpoints(GenericCheckpointsMixin, Checkpoints):
+    """requires the following methods:"""
+
+    def create_file_checkpoint(self, content, format, path):
+        """ -> checkpoint model"""
+
+    def create_notebook_checkpoint(self, nb, path):
+        """ -> checkpoint model"""
+
+    def get_file_checkpoint(self, checkpoint_id, path):
+        """ -> {'type': 'file', 'content': <str>, 'format': {'text', 'base64'}}"""
+
+    def get_notebook_checkpoint(self, checkpoint_id, path):
+        """ -> {'type': 'notebook', 'content': <output of nbformat.read>}"""
+
+    def delete_checkpoint(self, checkpoint_id, path):
+        """deletes a checkpoint for a file"""
+
+    def list_checkpoints(self, path):
+        """returns a list of checkpoint models for a given file,
+        default just does one per file
+        """
+        return []
+
+    def rename_checkpoint(self, checkpoint_id, old_path, new_path):
+        """renames checkpoint from old path to new path"""
+
+
 class TileDBCloudContentsManager(FileContentsManager, HasTraits):
     # This makes the checkpoints get saved on this directory
     root_dir = Unicode("./", config=True)
@@ -69,48 +101,135 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
         super(FileContentsManager, self).__init__(**kwargs)
 
     def _checkpoints_class_default(self):
+        # return NoOpCheckpoints
         return GenericFileCheckpoints
 
     def _save_notebook(self, model, uri):
+        print("_save_notebook model={}".format(model))
         nb_contents = from_dict(model["content"])
         self.check_and_sign(nb_contents, uri)
         file_contents = numpy.array(bytearray(json.dumps(model["content"]), "utf-8"))
 
-        self.__write_bytes_to_array(
-            uri, file_contents, model.get("mimetype"), model.get("format")
+        final_name = self.__write_bytes_to_array(
+            uri, file_contents, model.get("mimetype"), model.get("format"), "notebook"
         )
 
         self.validate_notebook_model(model)
         return model.get("message")
 
-    def __create_array(self, uri):
-        # The array will be be 1 dimensional with domain of 0 to max uint64. We use a tile extent of 1024 bytes
-        dom = tiledb.Domain(
-            tiledb.Dim(
-                name="position",
-                domain=(0, numpy.iinfo(numpy.uint64).max - 1025),
-                tile=1024,
-                dtype=numpy.uint64,
+    def __increment_filename(self, filename, insert="-"):
+        """Increment a filename until it is unique.
+
+        Parameters
+        ----------
+        filename : unicode
+            The name of a file, including extension
+        path : unicode
+            The API path of the target's directory
+        insert: unicode
+            The characters to insert after the base filename
+
+        Returns
+        -------
+        name : unicode
+            A filename that is unique, based on the input filename.
+        """
+        # Extract the full suffix from the filename (e.g. .tar.gz)
+        basename, dot, ext = filename.rpartition(".")
+        if ext != "ipynb":
+            basename, dot, ext = filename.partition(".")
+
+        suffix = dot + ext
+        print("suffix=", suffix)
+
+        parts = basename.split(insert)
+        start = 0
+        if len(parts) > 0:
+            start_str = parts[len(parts) - 1]
+            if start_str.isdigit():
+                start = int(start_str)
+
+        start += 1
+        if start:
+            insert_i = "{}{}".format(insert, start)
+        else:
+            insert_i = ""
+        print("insert_i=", insert_i)
+        name = u"{basename}{insert}{suffix}".format(
+            basename=basename, insert=insert_i, suffix=suffix
+        )
+        return name
+
+    def __create_array(self, uri, name):
+        try:
+            # The array will be be 1 dimensional with domain of 0 to max uint64. We use a tile extent of 1024 bytes
+            dom = tiledb.Domain(
+                tiledb.Dim(
+                    name="position",
+                    domain=(0, numpy.iinfo(numpy.uint64).max - 1025),
+                    tile=1024,
+                    dtype=numpy.uint64,
+                    ctx=tiledb.cloud.Ctx(),
+                ),
+                ctx=tiledb.cloud.Ctx(),
             )
-        )
 
-        schema = tiledb.ArraySchema(
-            domain=dom,
-            sparse=True,
-            attrs=[tiledb.Attr(name="contents", dtype=numpy.uint8)],
-        )
+            schema = tiledb.ArraySchema(
+                domain=dom,
+                sparse=True,
+                attrs=[tiledb.Attr(name="contents", dtype=numpy.uint8)],
+                ctx=tiledb.cloud.Ctx(),
+            )
 
-        parts = uri.split("/")
-        parts_len = len(parts)
-        namespace = parts[parts_len-2]
-        array_name = parts[parts_len-1]
+            parts = uri.split("/")
+            parts_len = len(parts)
+            namespace = parts[parts_len - 2]
+            array_name = parts[parts_len - 1]
 
-        tiledb_uri_s3 = "tiledb://{}/{}".format(namespace, S3_PREFIX+array_name)
+            tiledb_uri_s3 = "tiledb://{}/{}".format(namespace, S3_PREFIX + array_name)
 
-        # Create the (empty) array on disk.
-        tiledb.SparseArray.create(tiledb_uri_s3, schema)
+            # Create the (empty) array on disk.
+            tiledb.SparseArray.create(tiledb_uri_s3, schema)
 
-        tiledb.cloud.array.update_info(name=array_name, tags=[TAG_JUPYTER_NOTEBOOK])
+            tiledb_uri = "tiledb://{}/{}".format(namespace, array_name)
+            print(
+                "updating array {} to have name {} with tags {}".format(
+                    tiledb_uri, name, [TAG_JUPYTER_NOTEBOOK]
+                )
+            )
+            tiledb.cloud.array.update_info(
+                uri=tiledb_uri, array_name=name, tags=[TAG_JUPYTER_NOTEBOOK]
+            )
+
+            return array_name
+        except tiledb.TileDBError as e:
+            if "already exists" in str(e):
+                parts = uri.split("/")
+                parts_length = len(parts)
+                array_name = parts[parts_length - 1]
+                #
+                # name_parts = array_name.split("-")
+                # name_parts_length = len(name_parts)
+                # if name_parts_length > 1:
+                #     intVal = name_parts[name_parts_length - 1]
+                #     intVal = int(intVal) + 1
+                #     name_parts[name_parts_length - 1] = str(intVal)
+                #     array_name = "-".join(name_parts)
+                # else:
+                #     array_name += "-1"
+
+                # path
+
+                array_name = self.__increment_filename(array_name)
+
+                parts[parts_length - 1] = array_name
+                uri = "/".join(parts)
+
+                return self.__create_array(uri, name)
+        except Exception as e:
+            raise HTTPError(400, "Error creating file %s " % e)
+
+        return None
 
     def __array_exists(self, path):
         tiledb_uri = self.tiledb_uri_from_path(path)
@@ -123,26 +242,40 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
 
         return False
 
-    def __write_bytes_to_array(self, uri, contents, mimetype=None, format=None):
+    def __write_bytes_to_array(
+        self, uri, contents, mimetype=None, format=None, type=None
+    ):
+        print(
+            "In __write_bytes_to_array for {} with mimetype={} and format={}".format(
+                uri, mimetype, format
+            )
+        )
 
         tiledb_uri = self.tiledb_uri_from_path(uri)
         # if not self.vfs.is_dir(uri):
         #     self.__create_array(uri)
+        final_array_name = None
         if not self.__array_exists(uri):
-                self.__create_array(tiledb_uri)
+            name = tiledb_uri.split("/")
+            name = name[len(name) - 1]
+            final_array_name = self.__create_array(tiledb_uri, name)
 
-        with tiledb.open(uri, mode="w") as A:
+        with tiledb.open(tiledb_uri, mode="w", ctx=tiledb.cloud.Ctx()) as A:
             A[range(len(contents))] = {"contents": contents}
             A.meta["file_size"] = len(contents)
             if mimetype is not None:
                 A.meta["mimetype"] = mimetype
             if format is not None:
                 A.meta["format"] = format
+            if type is not None:
+                A.meta["type"] = type
+
+        return final_array_name
 
     def __save_file(self, model, uri):
         file_contents = model["content"]
-        self.__write_bytes_to_array(
-            uri, file_contents, model.get("mimetype"), model.get("format")
+        return self.__write_bytes_to_array(
+            uri, file_contents, model.get("mimetype"), model.get("format"), "file"
         )
 
     # def __create_directory_and_group(self, path):
@@ -168,17 +301,19 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
             parts = path.split("/")
 
         length = len(parts)
-        return "tiledb://{}/{}".format(parts[length-2], parts[length-1])
+        return "tiledb://{}/{}".format(parts[length - 2], parts[length - 1])
 
     def __notebook_from_array(self, uri, content=True):
         """
-    Build a notebook model from database record.
+        Build a notebook model from database record.
         """
         model = base_model(uri)
         model["type"] = "notebook"
         if content:
             tiledb_uri = self.tiledb_uri_from_path(uri)
-            with tiledb.open(tiledb_uri) as A:
+            info = tiledb.cloud.array.info(tiledb_uri)
+            model["last_modified"] = info.last_accessed
+            with tiledb.open(tiledb_uri, ctx=tiledb.cloud.Ctx()) as A:
                 meta = A.meta
                 file_content = A[slice(0, meta["file_size"])]
                 nb_content = reads(
@@ -204,13 +339,20 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
         # else:
         #     model["last_modified"] = model["created"] = DUMMY_CREATED_DATE
         if content:
-            with tiledb.open(uri) as A:
+            tiledb_uri = self.tiledb_uri_from_path(uri)
+            info = tiledb.cloud.array.info(tiledb_uri)
+            model["last_modified"] = info.last_accessed
+            with tiledb.open(tiledb_uri, ctx=tiledb.cloud.Ctx()) as A:
                 meta = A.meta
-                model["mimetype"] = meta["mimetype"]
-                if format in meta:
+                if "mimetype" in meta:
+                    model["mimetype"] = meta["mimetype"]
+                if "format" in meta:
                     model["format"] = meta["format"]
                 else:
                     model["format"] = format
+
+                if "type" in meta:
+                    model["type"] = meta["type"]
                 file_content = A[slice(0, meta["file_size"])]
                 nb_content = file_content["contents"]
                 model["content"] = nb_content
@@ -219,7 +361,11 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
         return model
 
     def __list_namespace(self, category, namespace, content=False):
-        print("In list_namespace for {}/{} with content={}".format(category, namespace, content))
+        print(
+            "In list_namespace for {}/{} with content={}".format(
+                category, namespace, content
+            )
+        )
         arrays = []
         if category == "owned":
             arrays = tiledb.cloud.client.list_arrays(
@@ -245,6 +391,7 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
                 nbmodel["path"] = "cloud/{}/{}/{}".format(
                     category, namespace, nbmodel["path"]
                 )
+                model["last_modified"] = notebook.last_accessed
                 nbmodel["type"] = "notebook"
                 model["content"].append(nbmodel)
 
@@ -262,13 +409,9 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
         if category == "owned":
             arrays = tiledb.cloud.client.list_arrays(tag=TAG_JUPYTER_NOTEBOOK)
         elif category == "shared":
-            arrays = tiledb.cloud.client.list_shared_arrays(
-                tag=TAG_JUPYTER_NOTEBOOK
-            )
+            arrays = tiledb.cloud.client.list_shared_arrays(tag=TAG_JUPYTER_NOTEBOOK)
         elif category == "public":
-            arrays = tiledb.cloud.client.list_public_arrays(
-                tag=TAG_JUPYTER_NOTEBOOK
-            )
+            arrays = tiledb.cloud.client.list_public_arrays(tag=TAG_JUPYTER_NOTEBOOK)
 
         model = base_directory_model(category)
         model["path"] = "cloud/{}".format(category)
@@ -312,9 +455,7 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
 
     def __build_cloud_notebook_lists(self):
 
-        owned_notebooks = tiledb.cloud.client.list_arrays(
-            tag=TAG_JUPYTER_NOTEBOOK
-        )
+        owned_notebooks = tiledb.cloud.client.list_arrays(tag=TAG_JUPYTER_NOTEBOOK)
         shared_notebooks = tiledb.cloud.client.list_shared_arrays(
             tag=TAG_JUPYTER_NOTEBOOK
         )
@@ -338,6 +479,7 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
             for notebook in owned_notebooks:
                 model = base_model(notebook.name)
                 model["type"] = "notebook"
+                model["last_modified"] = notebook.last_accessed
                 model["path"] = "cloud/{}/{}".format("owned", model["path"])
                 ret["owned"]["content"].append(model)
 
@@ -347,6 +489,7 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
             for notebook in owned_notebooks:
                 model = base_model(notebook.name)
                 model["type"] = "notebook"
+                model["last_modified"] = notebook.last_accessed
                 model["path"] = "cloud/{}/{}".format("shared", model["path"])
                 ret["shared"]["content"].append(model)
 
@@ -356,6 +499,7 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
             for notebook in owned_notebooks:
                 model = base_model(notebook.name)
                 model["type"] = "notebook"
+                model["last_modified"] = notebook.last_accessed
                 model["path"] = "cloud/{}/{}".format("public", model["path"])
                 ret["public"]["content"].append(model)
 
@@ -465,7 +609,7 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
             if len(splits) == 1 and splits[0] == "cloud":
                 return True
             if (
-                len(splits) == 2
+                (len(splits) == 2 or len(splits) == 3)
                 and splits[0] == "cloud"
                 and (
                     splits[1] == "owned"
@@ -479,7 +623,11 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
 
     def get(self, path, content=True, type=None, format=None):
         """Get a file or directory model."""
-        print("in get")
+        print(
+            "in get for path={}, content={}, type={}, format={}".format(
+                path, content, type, format
+            )
+        )
         pathFixed = path.strip("/")
 
         if pathFixed == "" or pathFixed is None:
@@ -518,10 +666,11 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
         writing any data.
         """
         self.run_pre_save_hook(model=model, path=path)
+        print("in save for {} - {}".format(path, model))
+        pathFixed = path.strip("/")
 
-        path = path.strip("/")
-        if path == "" or path is None:
-            path = "."
+        if pathFixed == "" or pathFixed is None:
+            pathFixed = "."
 
         if "type" not in model:
             raise HTTPError(400, u"No file type provided")
@@ -531,16 +680,25 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
         if model["type"] not in ("directory", "file", "notebook"):
             raise HTTPError(400, "Unhandled contents type: %s" % model["type"])
 
+        if not self.__is_remote_path(pathFixed):
+            print("Not remote path in save")
+            return super().save(model, path)
+
+        validation_message = None
         try:
             if model["type"] == "notebook":
-                validation_message = self._save_notebook(model, path)
+                validation_message = self._save_notebook(model, pathFixed)
             elif model["type"] == "file":
-                validation_message = self.__save_file(model, path)
+                validation_message = self.__save_file(model, pathFixed)
             else:
-                if self.__is_remote_path(path):
-                    raise HTTPError(400, "Trying to create unsupported type: %s in cloud" % model["type"])
-                else:
-                    return super().save(model, path)
+                if self.__is_remote_path(pathFixed):
+                    raise HTTPError(
+                        400,
+                        "Trying to create unsupported type: %s in cloud"
+                        % model["type"],
+                    )
+                # else:
+                #     return super().save(model, path)
                 # validation_message = self.__create_directory_and_group(path)
         except Exception as e:
             self.log.error("Error while saving file: %s %s", path, e, exc_info=True)
@@ -586,12 +744,13 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
         exists : bool
             Whether the path does indeed exist.
         """
+        print("Checking if {} is a directory".format(path))
         if path == "" or path is None:
             path = "."
 
         pathFixed = path.strip("/")
         if self.__is_remote_dir(pathFixed):
-           return True
+            return True
 
         return super().dir_exists(path)
 
@@ -646,15 +805,19 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
         ----------
             obj: s3.Object or string
         """
+        print("Guessing type for {}".format(path))
         pathFixed = path.strip("/")
         if self.__is_remote_path(pathFixed):
             if self.__is_remote_dir(pathFixed):
                 return "directory"
             else:
                 try:
-                    tiledb_uri = self.tiledb_uri_from_path(path)
-                    if self.__get_mimetype(tiledb_uri) == NOTEBOOK_MIME:
-                        return "notebook"
+                    tiledb_uri = self.tiledb_uri_from_path(pathFixed)
+                    return self.__get_type(tiledb_uri)
+                    # if self.__get_mimetype(tiledb_uri) == NOTEBOOK_MIME:
+                    #     return "notebook"
+                    # else:
+                    #     return "file"
                 except Exception as e:
                     return "directory"
             # self.log.error("Error while saving file: %s %s", path, e, exc_info=True)
@@ -676,9 +839,22 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
         :param uri: of array
         :return:
         """
-        with tiledb.open(uri) as A:
+        with tiledb.open(uri, ctx=tiledb.cloud.Ctx()) as A:
             meta = A.meta
             if "mimetype" in meta:
                 return meta["mimetype"]
+
+        return None
+
+    def __get_type(self, uri):
+        """
+        Fetch type from array metadata
+        :param uri: of array
+        :return:
+        """
+        with tiledb.open(uri, ctx=tiledb.cloud.Ctx()) as A:
+            meta = A.meta
+            if "type" in meta:
+                return meta["type"]
 
         return None
