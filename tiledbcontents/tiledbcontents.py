@@ -65,59 +65,21 @@ def remove_path_prefix(path_prefix, path):
     return ret
 
 
-class NoOpCheckpoints(GenericCheckpointsMixin, Checkpoints):
-    """requires the following methods:"""
-
-    def create_file_checkpoint(self, content, format, path):
-        """ -> checkpoint model"""
-
-    def create_notebook_checkpoint(self, nb, path):
-        """ -> checkpoint model"""
-
-    def get_file_checkpoint(self, checkpoint_id, path):
-        """ -> {'type': 'file', 'content': <str>, 'format': {'text', 'base64'}}"""
-
-    def get_notebook_checkpoint(self, checkpoint_id, path):
-        """ -> {'type': 'notebook', 'content': <output of nbformat.read>}"""
-
-    def delete_checkpoint(self, checkpoint_id, path):
-        """deletes a checkpoint for a file"""
-
-    def list_checkpoints(self, path):
-        """returns a list of checkpoint models for a given file,
-        default just does one per file
-        """
-        return []
-
-    def rename_checkpoint(self, checkpoint_id, old_path, new_path):
-        """renames checkpoint from old path to new path"""
-
-
-class TileDBCloudContentsManager(FileContentsManager, HasTraits):
-    # This makes the checkpoints get saved on this directory
-    root_dir = Unicode("./", config=True)
-
-    def __init__(self, **kwargs):
-        super(FileContentsManager, self).__init__(**kwargs)
-
-    def _checkpoints_class_default(self):
-        # return NoOpCheckpoints
-        return GenericFileCheckpoints
-
+class TileDBContents(ContentsManager):
     def _save_notebook(self, model, uri):
         print("_save_notebook model={}".format(model))
         nb_contents = from_dict(model["content"])
         self.check_and_sign(nb_contents, uri)
         file_contents = numpy.array(bytearray(json.dumps(model["content"]), "utf-8"))
 
-        final_name = self.__write_bytes_to_array(
+        final_name = self._write_bytes_to_array(
             uri, file_contents, model.get("mimetype"), model.get("format"), "notebook"
         )
 
         self.validate_notebook_model(model)
         return model.get("message")
 
-    def __increment_filename(self, filename, insert="-"):
+    def _increment_filename(self, filename, insert="-"):
         """Increment a filename until it is unique.
 
         Parameters
@@ -160,7 +122,7 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
         )
         return name
 
-    def __create_array(self, uri, name):
+    def _create_array(self, uri, name):
         try:
             # The array will be be 1 dimensional with domain of 0 to max uint64. We use a tile extent of 1024 bytes
             dom = tiledb.Domain(
@@ -220,18 +182,18 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
 
                 # path
 
-                array_name = self.__increment_filename(array_name)
+                array_name = self._increment_filename(array_name)
 
                 parts[parts_length - 1] = array_name
                 uri = "/".join(parts)
 
-                return self.__create_array(uri, name)
+                return self._create_array(uri, name)
         except Exception as e:
             raise HTTPError(400, "Error creating file %s " % e)
 
         return None
 
-    def __array_exists(self, path):
+    def _array_exists(self, path):
         tiledb_uri = self.tiledb_uri_from_path(path)
         try:
             tiledb.cloud.array.info(tiledb_uri)
@@ -242,7 +204,7 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
 
         return False
 
-    def __write_bytes_to_array(
+    def _write_bytes_to_array(
         self, uri, contents, mimetype=None, format=None, type=None
     ):
         print(
@@ -255,10 +217,10 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
         # if not self.vfs.is_dir(uri):
         #     self.__create_array(uri)
         final_array_name = None
-        if not self.__array_exists(uri):
+        if not self._array_exists(uri):
             name = tiledb_uri.split("/")
             name = name[len(name) - 1]
-            final_array_name = self.__create_array(tiledb_uri, name)
+            final_array_name = self._create_array(tiledb_uri, name)
 
         with tiledb.open(tiledb_uri, mode="w", ctx=tiledb.cloud.Ctx()) as A:
             A[range(len(contents))] = {"contents": contents}
@@ -272,9 +234,9 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
 
         return final_array_name
 
-    def __save_file(self, model, uri):
+    def _save_file(self, model, uri):
         file_contents = model["content"]
-        return self.__write_bytes_to_array(
+        return self._write_bytes_to_array(
             uri, file_contents, model.get("mimetype"), model.get("format"), "file"
         )
 
@@ -303,7 +265,7 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
         length = len(parts)
         return "tiledb://{}/{}".format(parts[length - 2], parts[length - 1])
 
-    def __notebook_from_array(self, uri, content=True):
+    def _notebook_from_array(self, uri, content=True):
         """
         Build a notebook model from database record.
         """
@@ -327,7 +289,7 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
 
         return model
 
-    def __file_from_array(self, uri, content=True, format=None):
+    def _file_from_array(self, uri, content=True, format=None):
         """
         Build a notebook model from database record.
         """
@@ -360,6 +322,176 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
 
         return model
 
+    def _is_remote_path(self, path):
+        """
+        Checks if a path is remote or not
+        :param path:
+        :return:
+        """
+        # if path.startswith("cloud/public") or path.startswith("cloud/shared") or path.startswith("cloud/mine"):
+        if path.split(os.sep)[0] == "cloud" or path.split("/")[0] == "cloud":
+            return True
+        return False
+
+    def _is_remote_dir(self, path):
+        """
+        Checks if a path is a remote dir or not
+        :param path:
+        :return:
+        """
+        print("checking if {} is remote dir".format(path))
+        for sep in [os.sep, "/"]:
+            splits = path.split(sep)
+            print(splits)
+            if len(splits) == 1 and splits[0] == "cloud":
+                return True
+            if (
+                (len(splits) == 2 or len(splits) == 3)
+                and splits[0] == "cloud"
+                and (
+                    splits[1] == "owned"
+                    or splits[1] == "public"
+                    or splits[1] == "shared"
+                )
+            ):
+                return True
+
+        return False
+
+    def guess_type(self, path, allow_directory=True):
+        """
+        Guess the type of a file.
+
+        Taken from https://github.com/danielfrg/s3contents/blob/master/s3contents/genericmanager.py
+
+        If allow_directory is False, don't consider the possibility that the
+        file is a directory.
+        Parameters
+        ----------
+            obj: s3.Object or string
+        """
+        print("Guessing type for {}".format(path))
+        pathFixed = path.strip("/")
+        if self._is_remote_path(pathFixed):
+            if self._is_remote_dir(pathFixed):
+                return "directory"
+            else:
+                try:
+                    tiledb_uri = self.tiledb_uri_from_path(pathFixed)
+                    return self._get_type(tiledb_uri)
+                    # if self.__get_mimetype(tiledb_uri) == NOTEBOOK_MIME:
+                    #     return "notebook"
+                    # else:
+                    #     return "file"
+                except Exception as e:
+                    return "directory"
+            # self.log.error("Error while saving file: %s %s", path, e, exc_info=True)
+            # raise HTTPError(
+            #     500, "Unexpected error while saving file: %s %s" % (path, e)
+            # )
+            return "file"
+
+        if path.endswith(".ipynb"):
+            return "notebook"
+        elif allow_directory and self.dir_exists(path):
+            return "directory"
+        else:
+            return "file"
+
+    def _get_mimetype(self, uri):
+        """
+        Fetch mimetype from array metadata
+        :param uri: of array
+        :return:
+        """
+        with tiledb.open(uri, ctx=tiledb.cloud.Ctx()) as A:
+            meta = A.meta
+            if "mimetype" in meta:
+                return meta["mimetype"]
+
+        return None
+
+    def _get_type(self, uri):
+        """
+        Fetch type from array metadata
+        :param uri: of array
+        :return:
+        """
+        with tiledb.open(uri, ctx=tiledb.cloud.Ctx()) as A:
+            meta = A.meta
+            if "type" in meta:
+                return meta["type"]
+
+        return None
+
+
+class TileDBCheckpoints(GenericFileCheckpoints, TileDBContents, Checkpoints):
+    """requires the following methods:"""
+
+    def _tiledb_checkpoint_model(self):
+        return dict(id="checkpoints-not-supported", last_modified=DUMMY_CREATED_DATE,)
+
+    def create_file_checkpoint(self, content, format, path):
+        """ -> checkpoint model"""
+        pathFixed = path.strip("/")
+        if not self._is_remote_path(pathFixed):
+            return super().create_file_checkpoint(content, format, path)
+
+        return self._tiledb_checkpoint_model()
+
+    def create_notebook_checkpoint(self, nb, path):
+        """ -> checkpoint model"""
+        pathFixed = path.strip("/")
+        if not self._is_remote_path(pathFixed):
+            return super().create_notebook_checkpoint(nb, path)
+
+        return self._tiledb_checkpoint_model()
+
+    def get_file_checkpoint(self, checkpoint_id, path):
+        """ -> {'type': 'file', 'content': <str>, 'format': {'text', 'base64'}}"""
+        pathFixed = path.strip("/")
+        if not self._is_remote_path(pathFixed):
+            return super().get_file_checkpoint(checkpoint_id, path)
+
+    def get_notebook_checkpoint(self, checkpoint_id, path):
+        """ -> {'type': 'notebook', 'content': <output of nbformat.read>}"""
+        pathFixed = path.strip("/")
+        if not self._is_remote_path(pathFixed):
+            return super().get_notebook_checkpoint(checkpoint_id, path)
+
+    def delete_checkpoint(self, checkpoint_id, path):
+        """deletes a checkpoint for a file"""
+        pathFixed = path.strip("/")
+        if not self._is_remote_path(pathFixed):
+            return super().delete_checkpoint(checkpoint_id, path)
+
+    def list_checkpoints(self, path):
+        """returns a list of checkpoint models for a given file,
+        default just does one per file
+        """
+        pathFixed = path.strip("/")
+        if not self._is_remote_path(pathFixed):
+            return super().list_checkpoints(path)
+        return []
+
+    def rename_checkpoint(self, checkpoint_id, old_path, new_path):
+        """renames checkpoint from old path to new path"""
+        pathFixed = old_path.strip("/")
+        if not self._is_remote_path(pathFixed):
+            return super().rename_checkpoint(checkpoint_id, old_path, new_path)
+
+
+class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits):
+    # This makes the checkpoints get saved on this directory
+    root_dir = Unicode("./", config=True)
+
+    def __init__(self, **kwargs):
+        super(FileContentsManager, self).__init__(**kwargs)
+
+    def _checkpoints_class_default(self):
+        # return NoOpCheckpoints
+        return TileDBCheckpoints
+
     def __list_namespace(self, category, namespace, content=False):
         print(
             "In list_namespace for {}/{} with content={}".format(
@@ -391,7 +523,7 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
                 nbmodel["path"] = "cloud/{}/{}/{}".format(
                     category, namespace, nbmodel["path"]
                 )
-                model["last_modified"] = notebook.last_accessed
+                nbmodel["last_modified"] = notebook.last_accessed
                 nbmodel["type"] = "notebook"
                 model["content"].append(nbmodel)
 
@@ -541,7 +673,7 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
         #     if "ST_MTIME" in lstat and lstat["ST_MTIME"]:
         model = base_directory_model(path)
         model["last_modified"] = model["created"] = DUMMY_CREATED_DATE
-        if not self.__is_remote_path(path) and not self.__is_remote_dir(path):
+        if not self._is_remote_path(path) and not self._is_remote_dir(path):
             return super()._dir_model(path, content)
 
         if path == "cloud":
@@ -576,50 +708,14 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
             #      continue
             type_ = self.guess_type(path, allow_directory=True)
             if type_ == "notebook":
-                ret.append(self.__notebook_from_array(path, False))
+                ret.append(self._notebook_from_array(path, False))
             elif type_ == "file":
-                ret.append(self.__file_from_array(path, False, None))
+                ret.append(self._file_from_array(path, False, None))
             elif type_ == "directory":
                 ret.append(self.__directory_model_from_path(path, False))
             else:
                 HTTPError(500, "Unknown file type %s for file '%s'" % (type_, path))
         return ret
-
-    def __is_remote_path(self, path):
-        """
-        Checks if a path is remote or not
-        :param path:
-        :return:
-        """
-        # if path.startswith("cloud/public") or path.startswith("cloud/shared") or path.startswith("cloud/mine"):
-        if path.split(os.sep)[0] == "cloud" or path.split("/")[0] == "cloud":
-            return True
-        return False
-
-    def __is_remote_dir(self, path):
-        """
-        Checks if a path is a remote dir or not
-        :param path:
-        :return:
-        """
-        print("checking if {} is remote dir".format(path))
-        for sep in [os.sep, "/"]:
-            splits = path.split(sep)
-            print(splits)
-            if len(splits) == 1 and splits[0] == "cloud":
-                return True
-            if (
-                (len(splits) == 2 or len(splits) == 3)
-                and splits[0] == "cloud"
-                and (
-                    splits[1] == "owned"
-                    or splits[1] == "public"
-                    or splits[1] == "shared"
-                )
-            ):
-                return True
-
-        return False
 
     def get(self, path, content=True, type=None, format=None):
         """Get a file or directory model."""
@@ -634,7 +730,7 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
             pathFixed = "."
 
         self.log.info("get path={}, pathFixed={}".format(path, pathFixed))
-        if not self.__is_remote_path(pathFixed):
+        if not self._is_remote_path(pathFixed):
             model = super().get(path, content, type, format)
             if pathFixed == "." and content:
                 cloud = base_directory_model("cloud")
@@ -644,15 +740,15 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
             return model
 
         if type is None:
-            if self.__is_remote_dir(pathFixed):
+            if self._is_remote_dir(pathFixed):
                 type = "directory"
             else:
                 type = self.guess_type(path, allow_directory=True)
 
         if type == "notebook":
-            return self.__notebook_from_array(pathFixed, content)
+            return self._notebook_from_array(pathFixed, content)
         elif type == "file":
-            return self.__file_from_array(pathFixed, content, format)
+            return self._file_from_array(pathFixed, content, format)
         elif type == "directory":
             return self.__directory_model_from_path(pathFixed, content)
             # if model is not None:
@@ -680,7 +776,7 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
         if model["type"] not in ("directory", "file", "notebook"):
             raise HTTPError(400, "Unhandled contents type: %s" % model["type"])
 
-        if not self.__is_remote_path(pathFixed):
+        if not self._is_remote_path(pathFixed):
             print("Not remote path in save")
             return super().save(model, path)
 
@@ -689,9 +785,9 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
             if model["type"] == "notebook":
                 validation_message = self._save_notebook(model, pathFixed)
             elif model["type"] == "file":
-                validation_message = self.__save_file(model, pathFixed)
+                validation_message = self._save_file(model, pathFixed)
             else:
-                if self.__is_remote_path(pathFixed):
+                if self._is_remote_path(pathFixed):
                     raise HTTPError(
                         400,
                         "Trying to create unsupported type: %s in cloud"
@@ -717,7 +813,7 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
         #     self.vfs.remove_file(path)
         # else:
         #     self.vfs.remove_dir(path)
-        if self.__is_remote_path(path):
+        if self._is_remote_path(path):
             tiledb_uri = self.tiledb_uri_from_path(path)
             return tiledb.cloud.array.deregister_array(tiledb_uri)
         else:
@@ -749,7 +845,7 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
             path = "."
 
         pathFixed = path.strip("/")
-        if self.__is_remote_dir(pathFixed):
+        if self._is_remote_dir(pathFixed):
             return True
 
         return super().dir_exists(path)
@@ -767,7 +863,7 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
             Whether the path is hidden.
         """
         pathFixed = path.strip("/")
-        if self.__is_remote_path(pathFixed):
+        if self._is_remote_path(pathFixed):
             return False
 
         return super().is_hidden(path)
@@ -789,72 +885,6 @@ class TileDBCloudContentsManager(FileContentsManager, HasTraits):
         #     path = "."
 
         pathFixed = path.strip("/")
-        if self.__is_remote_path(pathFixed):
-            return self.__array_exists(pathFixed)
+        if self._is_remote_path(pathFixed):
+            return self._array_exists(pathFixed)
         return super().file_exists(path)
-
-    def guess_type(self, path, allow_directory=True):
-        """
-        Guess the type of a file.
-
-        Taken from https://github.com/danielfrg/s3contents/blob/master/s3contents/genericmanager.py
-
-        If allow_directory is False, don't consider the possibility that the
-        file is a directory.
-        Parameters
-        ----------
-            obj: s3.Object or string
-        """
-        print("Guessing type for {}".format(path))
-        pathFixed = path.strip("/")
-        if self.__is_remote_path(pathFixed):
-            if self.__is_remote_dir(pathFixed):
-                return "directory"
-            else:
-                try:
-                    tiledb_uri = self.tiledb_uri_from_path(pathFixed)
-                    return self.__get_type(tiledb_uri)
-                    # if self.__get_mimetype(tiledb_uri) == NOTEBOOK_MIME:
-                    #     return "notebook"
-                    # else:
-                    #     return "file"
-                except Exception as e:
-                    return "directory"
-            # self.log.error("Error while saving file: %s %s", path, e, exc_info=True)
-            # raise HTTPError(
-            #     500, "Unexpected error while saving file: %s %s" % (path, e)
-            # )
-            return "file"
-
-        if path.endswith(".ipynb"):
-            return "notebook"
-        elif allow_directory and self.dir_exists(path):
-            return "directory"
-        else:
-            return "file"
-
-    def __get_mimetype(self, uri):
-        """
-        Fetch mimetype from array metadata
-        :param uri: of array
-        :return:
-        """
-        with tiledb.open(uri, ctx=tiledb.cloud.Ctx()) as A:
-            meta = A.meta
-            if "mimetype" in meta:
-                return meta["mimetype"]
-
-        return None
-
-    def __get_type(self, uri):
-        """
-        Fetch type from array metadata
-        :param uri: of array
-        :return:
-        """
-        with tiledb.open(uri, ctx=tiledb.cloud.Ctx()) as A:
-            meta = A.meta
-            if "type" in meta:
-                return meta["type"]
-
-        return None
