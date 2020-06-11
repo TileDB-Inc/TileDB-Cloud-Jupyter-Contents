@@ -4,6 +4,7 @@ import os
 import json
 import mimetypes
 import datetime
+import time
 import tiledb
 import tiledb.cloud
 import numpy
@@ -21,9 +22,28 @@ NBFORMAT_VERSION = 4
 
 NOTEBOOK_MIME = "application/x-ipynb+json"
 
-S3_PREFIX = "s3://tiledb-seth-test/notebooks/"
-
 TAG_JUPYTER_NOTEBOOK = "__jupyter-notebook"
+
+
+def get_s3_prefix():
+    """
+    Get S3 path from user profile
+    :return:
+    """
+    try:
+        profile = tiledb.cloud.client.user_profile()
+
+        if (
+            profile.notebook_settings is not None
+            and profile.notebook_settings.default_s3_path is not None
+        ):
+            return profile.notebook_settings.default_s3_path
+    except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+        raise HTTPError(
+            400, "Error fetching user default s3 path for new notebooks",
+        )
+
+    return None
 
 
 def base_model(path):
@@ -106,10 +126,15 @@ class TileDBContents(ContentsManager):
 
         parts = basename.split(insert)
         start = 0
-        if len(parts) > 0:
+        if len(parts) > 1:
             start_str = parts[len(parts) - 1]
             if start_str.isdigit():
                 start = int(start_str)
+
+            print("parts={}".format(parts))
+            print(parts[0 : len(parts) - 1])
+            basename = insert.join(parts[0 : len(parts) - 1])
+        print("basename={}".format(basename))
 
         start += 1
         if start:
@@ -148,7 +173,14 @@ class TileDBContents(ContentsManager):
             namespace = parts[parts_len - 2]
             array_name = parts[parts_len - 1]
 
-            tiledb_uri_s3 = "tiledb://{}/{}".format(namespace, S3_PREFIX + array_name)
+            s3_prefix = get_s3_prefix()
+            if s3_prefix is None:
+                raise HTTPError(
+                    400,
+                    "You must set the default s3 prefix path for notebooks in user profile settings",
+                )
+
+            tiledb_uri_s3 = "tiledb://{}/{}".format(namespace, s3_prefix + array_name)
 
             # Create the (empty) array on disk.
             tiledb.SparseArray.create(tiledb_uri_s3, schema)
@@ -159,6 +191,7 @@ class TileDBContents(ContentsManager):
                     tiledb_uri, name, [TAG_JUPYTER_NOTEBOOK]
                 )
             )
+            time.sleep(0.25)
             tiledb.cloud.array.update_info(
                 uri=tiledb_uri, array_name=name, tags=[TAG_JUPYTER_NOTEBOOK]
             )
@@ -273,19 +306,26 @@ class TileDBContents(ContentsManager):
         model["type"] = "notebook"
         if content:
             tiledb_uri = self.tiledb_uri_from_path(uri)
-            info = tiledb.cloud.array.info(tiledb_uri)
-            model["last_modified"] = info.last_accessed
-            with tiledb.open(tiledb_uri, ctx=tiledb.cloud.Ctx()) as A:
-                meta = A.meta
-                file_content = A[slice(0, meta["file_size"])]
-                nb_content = reads(
-                    file_content["contents"].tostring().decode("utf-8"),
-                    as_version=NBFORMAT_VERSION,
+            try:
+                info = tiledb.cloud.array.info(tiledb_uri)
+                model["last_modified"] = info.last_accessed
+                with tiledb.open(tiledb_uri, ctx=tiledb.cloud.Ctx()) as A:
+                    meta = A.meta
+                    file_content = A[slice(0, meta["file_size"])]
+                    nb_content = reads(
+                        file_content["contents"].tostring().decode("utf-8"),
+                        as_version=NBFORMAT_VERSION,
+                    )
+                    self.mark_trusted_cells(nb_content, uri)
+                    model["format"] = "json"
+                    model["content"] = nb_content
+                    self.validate_notebook_model(model)
+            except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+                raise HTTPError(400, "Error fetching notebook info: {}".format(str(e)))
+            except tiledb.TileDBError as e:
+                raise HTTPError(
+                    500, str(e),
                 )
-                self.mark_trusted_cells(nb_content, uri)
-                model["format"] = "json"
-                model["content"] = nb_content
-                self.validate_notebook_model(model)
 
         return model
 
@@ -302,23 +342,30 @@ class TileDBContents(ContentsManager):
         #     model["last_modified"] = model["created"] = DUMMY_CREATED_DATE
         if content:
             tiledb_uri = self.tiledb_uri_from_path(uri)
-            info = tiledb.cloud.array.info(tiledb_uri)
-            model["last_modified"] = info.last_accessed
-            with tiledb.open(tiledb_uri, ctx=tiledb.cloud.Ctx()) as A:
-                meta = A.meta
-                if "mimetype" in meta:
-                    model["mimetype"] = meta["mimetype"]
-                if "format" in meta:
-                    model["format"] = meta["format"]
-                else:
-                    model["format"] = format
+            try:
+                info = tiledb.cloud.array.info(tiledb_uri)
+                model["last_modified"] = info.last_accessed
+                with tiledb.open(tiledb_uri, ctx=tiledb.cloud.Ctx()) as A:
+                    meta = A.meta
+                    if "mimetype" in meta:
+                        model["mimetype"] = meta["mimetype"]
+                    if "format" in meta:
+                        model["format"] = meta["format"]
+                    else:
+                        model["format"] = format
 
-                if "type" in meta:
-                    model["type"] = meta["type"]
-                file_content = A[slice(0, meta["file_size"])]
-                nb_content = file_content["contents"]
-                model["content"] = nb_content
-                self.validate_notebook_model(model)
+                    if "type" in meta:
+                        model["type"] = meta["type"]
+                    file_content = A[slice(0, meta["file_size"])]
+                    nb_content = file_content["contents"]
+                    model["content"] = nb_content
+                    self.validate_notebook_model(model)
+            except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+                raise HTTPError(500, "Error fetching file info: {}".format(str(e)))
+            except tiledb.TileDBError as e:
+                raise HTTPError(
+                    500, str(e),
+                )
 
         return model
 
@@ -404,10 +451,17 @@ class TileDBContents(ContentsManager):
         :param uri: of array
         :return:
         """
-        with tiledb.open(uri, ctx=tiledb.cloud.Ctx()) as A:
-            meta = A.meta
-            if "mimetype" in meta:
-                return meta["mimetype"]
+        try:
+            with tiledb.open(uri, ctx=tiledb.cloud.Ctx()) as A:
+                meta = A.meta
+                if "mimetype" in meta:
+                    return meta["mimetype"]
+        except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+            raise HTTPError(500, "Error getting mimetype: {}".format(str(e)))
+        except tiledb.TileDBError as e:
+            raise HTTPError(
+                500, str(e),
+            )
 
         return None
 
@@ -417,10 +471,17 @@ class TileDBContents(ContentsManager):
         :param uri: of array
         :return:
         """
-        with tiledb.open(uri, ctx=tiledb.cloud.Ctx()) as A:
-            meta = A.meta
-            if "type" in meta:
-                return meta["type"]
+        try:
+            with tiledb.open(uri, ctx=tiledb.cloud.Ctx()) as A:
+                meta = A.meta
+                if "type" in meta:
+                    return meta["type"]
+        except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+            raise HTTPError(500, "Error getting type: {}".format(str(e)))
+        except tiledb.TileDBError as e:
+            raise HTTPError(
+                500, str(e),
+            )
 
         return None
 
@@ -499,17 +560,26 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             )
         )
         arrays = []
-        if category == "owned":
-            arrays = tiledb.cloud.client.list_arrays(
-                tag=TAG_JUPYTER_NOTEBOOK, namespace=namespace
+        try:
+            if category == "owned":
+                arrays = tiledb.cloud.client.list_arrays(
+                    tag=TAG_JUPYTER_NOTEBOOK, namespace=namespace
+                )
+            elif category == "shared":
+                arrays = tiledb.cloud.client.list_shared_arrays(
+                    tag=TAG_JUPYTER_NOTEBOOK, namespace=namespace
+                )
+            elif category == "public":
+                arrays = tiledb.cloud.client.list_public_arrays(
+                    tag=TAG_JUPYTER_NOTEBOOK, namespace=namespace
+                )
+        except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+            raise HTTPError(
+                500, "Error listing notebooks in {}: ".format(namespace, str(e))
             )
-        elif category == "shared":
-            arrays = tiledb.cloud.client.list_shared_arrays(
-                tag=TAG_JUPYTER_NOTEBOOK, namespace=namespace
-            )
-        elif category == "public":
-            arrays = tiledb.cloud.client.list_public_arrays(
-                tag=TAG_JUPYTER_NOTEBOOK, namespace=namespace
+        except tiledb.TileDBError as e:
+            raise HTTPError(
+                500, str(e),
             )
 
         model = base_directory_model(namespace)
@@ -538,12 +608,25 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         """
         print("in __list_category for {}".format(category))
         arrays = []
-        if category == "owned":
-            arrays = tiledb.cloud.client.list_arrays(tag=TAG_JUPYTER_NOTEBOOK)
-        elif category == "shared":
-            arrays = tiledb.cloud.client.list_shared_arrays(tag=TAG_JUPYTER_NOTEBOOK)
-        elif category == "public":
-            arrays = tiledb.cloud.client.list_public_arrays(tag=TAG_JUPYTER_NOTEBOOK)
+        try:
+            if category == "owned":
+                arrays = tiledb.cloud.client.list_arrays(tag=TAG_JUPYTER_NOTEBOOK)
+            elif category == "shared":
+                arrays = tiledb.cloud.client.list_shared_arrays(
+                    tag=TAG_JUPYTER_NOTEBOOK
+                )
+            elif category == "public":
+                arrays = tiledb.cloud.client.list_public_arrays(
+                    tag=TAG_JUPYTER_NOTEBOOK
+                )
+        except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+            raise HTTPError(
+                500, "Error listing notebooks in {}: {}".format(category, str(e))
+            )
+        except tiledb.TileDBError as e:
+            raise HTTPError(
+                500, str(e),
+            )
 
         model = base_directory_model(category)
         model["path"] = "cloud/{}".format(category)
@@ -554,23 +637,33 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             if (arrays is None or len(arrays) == 0) and category == "owned":
                 # If the arrays are empty, and the category is for owned, we should list the user and their
                 # organizations so they can create new notebooks
-                profile = tiledb.cloud.client.user_profile()
-                namespace_model = base_directory_model(profile.username)
-                namespace_model["path"] = "cloud/{}/{}".format(
-                    category, profile.username
-                )
-                namespaces[profile.username] = namespace_model
-
-                for org in profile.organizations:
-                    # Don't list public for owned
-                    if org.organization_name == "public":
-                        continue
-
-                    namespace_model = base_directory_model(org.organization_name)
+                try:
+                    profile = tiledb.cloud.client.user_profile()
+                    namespace_model = base_directory_model(profile.username)
                     namespace_model["path"] = "cloud/{}/{}".format(
-                        category, org.organization_name
+                        category, profile.username
                     )
-                    namespaces[org.organization_name] = namespace_model
+                    namespaces[profile.username] = namespace_model
+
+                    for org in profile.organizations:
+                        # Don't list public for owned
+                        if org.organization_name == "public":
+                            continue
+
+                        namespace_model = base_directory_model(org.organization_name)
+                        namespace_model["path"] = "cloud/{}/{}".format(
+                            category, org.organization_name
+                        )
+                        namespaces[org.organization_name] = namespace_model
+                except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+                    raise HTTPError(
+                        500,
+                        "Error listing notebooks in {}: {}".format(category, str(e)),
+                    )
+                except tiledb.TileDBError as e:
+                    raise HTTPError(
+                        500, str(e),
+                    )
 
             else:
                 for notebook in arrays:
@@ -587,53 +680,61 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
 
     def __build_cloud_notebook_lists(self):
 
-        owned_notebooks = tiledb.cloud.client.list_arrays(tag=TAG_JUPYTER_NOTEBOOK)
-        shared_notebooks = tiledb.cloud.client.list_shared_arrays(
-            tag=TAG_JUPYTER_NOTEBOOK
-        )
-        public_notebooks = tiledb.cloud.client.list_public_arrays(
-            tag=TAG_JUPYTER_NOTEBOOK
-        )
-
         ret = {
             "owned": base_directory_model("owned"),
             "public": base_directory_model("public"),
             "shared": base_directory_model("shared"),
         }
+        try:
+            owned_notebooks = tiledb.cloud.client.list_arrays(tag=TAG_JUPYTER_NOTEBOOK)
+            shared_notebooks = tiledb.cloud.client.list_shared_arrays(
+                tag=TAG_JUPYTER_NOTEBOOK
+            )
+            public_notebooks = tiledb.cloud.client.list_public_arrays(
+                tag=TAG_JUPYTER_NOTEBOOK
+            )
 
-        ret["owned"]["path"] = "cloud/owned"
-        ret["public"]["path"] = "cloud/public"
-        ret["shared"]["path"] = "cloud/shared"
+            ret["owned"]["path"] = "cloud/owned"
+            ret["public"]["path"] = "cloud/public"
+            ret["shared"]["path"] = "cloud/shared"
 
-        if len(owned_notebooks) > 0:
-            ret["owned"]["format"] = "json"
-            ret["owned"]["content"] = []
-            for notebook in owned_notebooks:
-                model = base_model(notebook.name)
-                model["type"] = "notebook"
-                model["last_modified"] = notebook.last_accessed
-                model["path"] = "cloud/{}/{}".format("owned", model["path"])
-                ret["owned"]["content"].append(model)
+            if len(owned_notebooks) > 0:
+                ret["owned"]["format"] = "json"
+                ret["owned"]["content"] = []
+                for notebook in owned_notebooks:
+                    model = base_model(notebook.name)
+                    model["type"] = "notebook"
+                    model["last_modified"] = notebook.last_accessed
+                    model["path"] = "cloud/{}/{}".format("owned", model["path"])
+                    ret["owned"]["content"].append(model)
 
-        if len(shared_notebooks) > 0:
-            ret["shared"]["format"] = "json"
-            ret["shared"]["content"] = []
-            for notebook in owned_notebooks:
-                model = base_model(notebook.name)
-                model["type"] = "notebook"
-                model["last_modified"] = notebook.last_accessed
-                model["path"] = "cloud/{}/{}".format("shared", model["path"])
-                ret["shared"]["content"].append(model)
+            if len(shared_notebooks) > 0:
+                ret["shared"]["format"] = "json"
+                ret["shared"]["content"] = []
+                for notebook in owned_notebooks:
+                    model = base_model(notebook.name)
+                    model["type"] = "notebook"
+                    model["last_modified"] = notebook.last_accessed
+                    model["path"] = "cloud/{}/{}".format("shared", model["path"])
+                    ret["shared"]["content"].append(model)
 
-        if len(public_notebooks) > 0:
-            ret["public"]["format"] = "json"
-            ret["public"]["content"] = []
-            for notebook in owned_notebooks:
-                model = base_model(notebook.name)
-                model["type"] = "notebook"
-                model["last_modified"] = notebook.last_accessed
-                model["path"] = "cloud/{}/{}".format("public", model["path"])
-                ret["public"]["content"].append(model)
+            if len(public_notebooks) > 0:
+                ret["public"]["format"] = "json"
+                ret["public"]["content"] = []
+                for notebook in owned_notebooks:
+                    model = base_model(notebook.name)
+                    model["type"] = "notebook"
+                    model["last_modified"] = notebook.last_accessed
+                    model["path"] = "cloud/{}/{}".format("public", model["path"])
+                    ret["public"]["content"].append(model)
+        except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+            raise HTTPError(
+                500, "Error building cloud notebook info: {}".format(str(e))
+            )
+        except tiledb.TileDBError as e:
+            raise HTTPError(
+                500, str(e),
+            )
 
         return list(ret.values())
 
@@ -815,7 +916,16 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         #     self.vfs.remove_dir(path)
         if self._is_remote_path(path):
             tiledb_uri = self.tiledb_uri_from_path(path)
-            return tiledb.cloud.array.deregister_array(tiledb_uri)
+            try:
+                return tiledb.cloud.array.deregister_array(tiledb_uri)
+            except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+                raise HTTPError(
+                    500, "Error deregistering {}: ".format(tiledb_uri, str(e))
+                )
+            except tiledb.TileDBError as e:
+                raise HTTPError(
+                    500, str(e),
+                )
         else:
             return super().delete_file(path)
 
