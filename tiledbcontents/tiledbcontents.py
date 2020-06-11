@@ -51,9 +51,9 @@ def get_s3_prefix(namespace):
             ):
                 return organization.notebook_settings.default_s3_path
     except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-        print(e)
         raise http_error(
-            400, "Error fetching user default s3 path for new notebooks",
+            400,
+            "Error fetching user default s3 path for new notebooks {}".format(str(e)),
         )
 
     return None
@@ -100,7 +100,6 @@ def remove_path_prefix(path_prefix, path):
 
 class TileDBContents(ContentsManager):
     def _save_notebook(self, model, uri):
-        print("_save_notebook model={}".format(model))
         nb_contents = from_dict(model["content"])
         self.check_and_sign(nb_contents, uri)
         file_contents = numpy.array(bytearray(json.dumps(model["content"]), "utf-8"))
@@ -135,7 +134,6 @@ class TileDBContents(ContentsManager):
             basename, dot, ext = filename.partition(".")
 
         suffix = dot + ext
-        print("suffix=", suffix)
 
         parts = basename.split(insert)
         start = 0
@@ -144,17 +142,13 @@ class TileDBContents(ContentsManager):
             if start_str.isdigit():
                 start = int(start_str)
 
-            print("parts={}".format(parts))
-            print(parts[0 : len(parts) - 1])
             basename = insert.join(parts[0 : len(parts) - 1])
-        print("basename={}".format(basename))
 
         start += 1
         if start:
             insert_i = "{}{}".format(insert, start)
         else:
             insert_i = ""
-        print("insert_i=", insert_i)
         name = u"{basename}{insert}{suffix}".format(
             basename=basename, insert=insert_i, suffix=suffix
         )
@@ -208,11 +202,6 @@ class TileDBContents(ContentsManager):
             tiledb.SparseArray.create(tiledb_uri_s3, schema)
 
             tiledb_uri = "tiledb://{}/{}".format(namespace, array_name)
-            print(
-                "updating array {} to have name {} with tags {}".format(
-                    tiledb_uri, name, [TAG_JUPYTER_NOTEBOOK]
-                )
-            )
             time.sleep(0.25)
             tiledb.cloud.array.update_info(
                 uri=tiledb_uri, array_name=name, tags=[TAG_JUPYTER_NOTEBOOK]
@@ -267,12 +256,6 @@ class TileDBContents(ContentsManager):
     def _write_bytes_to_array(
         self, uri, contents, mimetype=None, format=None, type=None
     ):
-        print(
-            "In __write_bytes_to_array for {} with mimetype={} and format={}".format(
-                uri, mimetype, format
-            )
-        )
-
         tiledb_uri = self.tiledb_uri_from_path(uri)
         # if not self.vfs.is_dir(uri):
         #     self.__create_array(uri)
@@ -413,10 +396,8 @@ class TileDBContents(ContentsManager):
         :param path:
         :return:
         """
-        print("checking if {} is remote dir".format(path))
         for sep in [os.sep, "/"]:
             splits = path.split(sep)
-            print(splits)
             if len(splits) == 1 and splits[0] == "cloud":
                 return True
             if (
@@ -444,7 +425,6 @@ class TileDBContents(ContentsManager):
         ----------
             obj: s3.Object or string
         """
-        print("Guessing type for {}".format(path))
         pathFixed = path.strip("/")
         if self._is_remote_path(pathFixed):
             if self._is_remote_dir(pathFixed):
@@ -581,11 +561,6 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         return TileDBCheckpoints
 
     def __list_namespace(self, category, namespace, content=False):
-        print(
-            "In list_namespace for {}/{} with content={}".format(
-                category, namespace, content
-            )
-        )
         arrays = []
         try:
             if category == "owned":
@@ -611,7 +586,6 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
 
         model = base_directory_model(namespace)
         model["path"] = "cloud/{}/{}".format(category, namespace)
-        print("namespace arrays = {}".format(arrays))
         if content:
             model["format"] = "json"
             model["content"] = []
@@ -633,7 +607,6 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         :param content:
         :return:
         """
-        print("in __list_category for {}".format(category))
         arrays = []
         try:
             # if category == "owned":
@@ -702,7 +675,6 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
 
             model["content"] = list(namespaces.values())
 
-        print(model)
         return model
 
     def __build_cloud_notebook_lists(self):
@@ -810,7 +782,6 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             cloud["content"] = self.__build_cloud_notebook_lists()
             # model["content"] = [cloud]
             model = cloud
-            print(model)
         else:
             category = self.__category_from_path(path)
             namespace = self.__namespace_from_path(path)
@@ -847,11 +818,6 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
 
     def get(self, path, content=True, type=None, format=None):
         """Get a file or directory model."""
-        print(
-            "in get for path={}, content={}, type={}, format={}".format(
-                path, content, type, format
-            )
-        )
         pathFixed = path.strip("/")
 
         if pathFixed == "" or pathFixed is None:
@@ -890,7 +856,6 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         writing any data.
         """
         self.run_pre_save_hook(model=model, path=path)
-        print("in save for {} - {}".format(path, model))
         pathFixed = path.strip("/")
 
         if pathFixed == "" or pathFixed is None:
@@ -905,7 +870,6 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             raise http_error(400, "Unhandled contents type: %s" % model["type"])
 
         if not self._is_remote_path(pathFixed):
-            print("Not remote path in save")
             return super().save(model, path)
 
         validation_message = None
@@ -975,7 +939,6 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         exists : bool
             Whether the path does indeed exist.
         """
-        print("Checking if {} is a directory".format(path))
         if path == "" or path is None:
             path = "."
 
