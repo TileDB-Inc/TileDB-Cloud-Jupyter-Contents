@@ -147,7 +147,14 @@ class TileDBContents(ContentsManager):
         )
         return name
 
-    def _create_array(self, uri, name):
+    def _create_array(self, uri, name, retry=0):
+        """
+
+        :param uri:
+        :param name:
+        :param retry: number of times to retry request
+        :return:
+        """
         try:
             # The array will be be 1 dimensional with domain of 0 to max uint64. We use a tile extent of 1024 bytes
             dom = tiledb.Domain(
@@ -220,7 +227,10 @@ class TileDBContents(ContentsManager):
                 parts[parts_length - 1] = array_name
                 uri = "/".join(parts)
 
-                return self._create_array(uri, name)
+                return self._create_array(uri, name, retry)
+            elif retry:
+                retry -= 1
+                return self._create_array(uri, name, retry)
         except Exception as e:
             raise HTTPError(400, "Error creating file %s " % e)
 
@@ -253,7 +263,7 @@ class TileDBContents(ContentsManager):
         if not self._array_exists(uri):
             name = tiledb_uri.split("/")
             name = name[len(name) - 1]
-            final_array_name = self._create_array(tiledb_uri, name)
+            final_array_name = self._create_array(tiledb_uri, name, 5)
 
         with tiledb.open(tiledb_uri, mode="w", ctx=tiledb.cloud.Ctx()) as A:
             A[range(len(contents))] = {"contents": contents}
