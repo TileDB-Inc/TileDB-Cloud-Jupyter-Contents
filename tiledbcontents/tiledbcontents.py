@@ -319,6 +319,8 @@ class TileDBContents(ContentsManager):
             try:
                 info = tiledb.cloud.array.info(tiledb_uri)
                 model["last_modified"] = info.last_accessed
+                if "write" not in info.allowed_actions:
+                    model["writable"] = False
                 with tiledb.open(tiledb_uri, ctx=tiledb.cloud.Ctx()) as A:
                     meta = A.meta
                     file_content = A[slice(0, meta["file_size"])]
@@ -355,6 +357,8 @@ class TileDBContents(ContentsManager):
             try:
                 info = tiledb.cloud.array.info(tiledb_uri)
                 model["last_modified"] = info.last_accessed
+                if "write" not in info.allowed_actions:
+                    model["writable"] = False
                 with tiledb.open(tiledb_uri, ctx=tiledb.cloud.Ctx()) as A:
                     meta = A.meta
                     if "mimetype" in meta:
@@ -596,6 +600,8 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 )
                 nbmodel["last_modified"] = notebook.last_accessed
                 nbmodel["type"] = "notebook"
+                if "write" not in notebook.allowed_actions:
+                    model["writable"] = False
                 model["content"].append(nbmodel)
 
         return model
@@ -668,6 +674,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             else:
                 for notebook in arrays:
                     namespace_model = base_directory_model(notebook.namespace)
+                    namespace_model["writable"] = False
                     namespace_model["path"] = "cloud/{}/{}".format(
                         category, notebook.namespace
                     )
@@ -823,7 +830,6 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         if pathFixed == "" or pathFixed is None:
             pathFixed = "."
 
-        self.log.info("get path={}, pathFixed={}".format(path, pathFixed))
         if not self._is_remote_path(pathFixed):
             model = super().get(path, content, type, format)
             if pathFixed == "." and content:
