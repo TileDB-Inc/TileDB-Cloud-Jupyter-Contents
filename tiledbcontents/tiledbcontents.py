@@ -99,7 +99,7 @@ def remove_path_prefix(path_prefix, path):
 
 
 class TileDBContents(ContentsManager):
-    def _save_notebook(self, model, uri):
+    def _save_notebook_tiledb(self, model, uri):
         nb_contents = from_dict(model["content"])
         self.check_and_sign(nb_contents, uri)
         file_contents = numpy.array(bytearray(json.dumps(model["content"]), "utf-8"))
@@ -277,7 +277,7 @@ class TileDBContents(ContentsManager):
 
         return final_array_name
 
-    def _save_file(self, model, uri):
+    def _save_file_tiledb(self, model, uri):
         file_contents = model["content"]
         return self._write_bytes_to_array(
             uri, file_contents, model.get("mimetype"), model.get("format"), "file"
@@ -881,9 +881,9 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         validation_message = None
         try:
             if model["type"] == "notebook":
-                validation_message = self._save_notebook(model, pathFixed)
+                validation_message = self._save_notebook_tiledb(model, pathFixed)
             elif model["type"] == "file":
-                validation_message = self._save_file(model, pathFixed)
+                validation_message = self._save_file_tiledb(model, pathFixed)
             else:
                 if self._is_remote_path(pathFixed):
                     raise http_error(
