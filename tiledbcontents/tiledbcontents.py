@@ -1,14 +1,11 @@
-import itertools
-import numbers
 import os
 import json
-import mimetypes
 import datetime
 import time
 import tiledb
 import tiledb.cloud
 import numpy
-from notebook.services.contents.checkpoints import GenericCheckpointsMixin, Checkpoints
+from notebook.services.contents.checkpoints import Checkpoints
 from notebook.services.contents.filemanager import FileContentsManager
 
 from tornado.web import HTTPError
@@ -33,8 +30,8 @@ def http_error(code, message):
 
 def get_s3_prefix(namespace):
     """
-    Get S3 path from user profile
-    :return:
+    Get S3 path from the user profile or organization profile
+    :return: s3 path or error
     """
     try:
         profile = tiledb.cloud.client.user_profile()
@@ -94,6 +91,12 @@ def base_directory_model(path):
 
 
 def remove_path_prefix(path_prefix, path):
+    """
+    Remove a prefix
+    :param path_prefix:
+    :param path:
+    :return:
+    """
     ret = path.split(path_prefix, 1)
     if len(ret) > 1:
         return ret[1]
@@ -101,7 +104,17 @@ def remove_path_prefix(path_prefix, path):
 
 
 class TileDBContents(ContentsManager):
+    """
+    A general class for TileDB Contents, parent of the actual contents class and checkpoints
+    """
+
     def _save_notebook_tiledb(self, model, uri):
+        """
+        Save a notebook to tiledb array
+        :param model: model notebook
+        :param uri: URI of notebook
+        :return: any messages
+        """
         nb_contents = from_dict(model["content"])
         self.check_and_sign(nb_contents, uri)
         file_contents = numpy.array(bytearray(json.dumps(model["content"]), "utf-8"))
@@ -158,9 +171,9 @@ class TileDBContents(ContentsManager):
 
     def _create_array(self, uri, name, retry=0):
         """
-
-        :param uri:
-        :param name:
+        Create a new array for storing notebook file
+        :param uri: location to create array
+        :param name: name to register under
         :param retry: number of times to retry request
         :return:
         """
@@ -180,7 +193,13 @@ class TileDBContents(ContentsManager):
             schema = tiledb.ArraySchema(
                 domain=dom,
                 sparse=True,
-                attrs=[tiledb.Attr(name="contents", dtype=numpy.uint8)],
+                attrs=[
+                    tiledb.Attr(
+                        name="contents",
+                        dtype=numpy.uint8,
+                        filters=tiledb.FilterList(tiledb.ZstdFilter()),
+                    )
+                ],
                 ctx=tiledb.cloud.Ctx(),
             )
 
@@ -233,6 +252,11 @@ class TileDBContents(ContentsManager):
         return None
 
     def _array_exists(self, path):
+        """
+        Check if an array exists in TileDB Cloud
+        :param path:
+        :return:
+        """
         tiledb_uri = self.tiledb_uri_from_path(path)
         try:
             tiledb.cloud.array.info(tiledb_uri)
@@ -246,6 +270,15 @@ class TileDBContents(ContentsManager):
     def _write_bytes_to_array(
         self, uri, contents, mimetype=None, format=None, type=None
     ):
+        """
+        Write given bytes to the array. Will create the array if it does not exist
+        :param uri: array to write to
+        :param contents: bytes to write
+        :param mimetype: mimetype to set in metadata
+        :param format: format to set in metadata
+        :param type: type to set in metadata
+        :return:
+        """
         tiledb_uri = self.tiledb_uri_from_path(uri)
         final_array_name = None
         if not self._array_exists(uri):
@@ -266,12 +299,23 @@ class TileDBContents(ContentsManager):
         return final_array_name
 
     def _save_file_tiledb(self, model, uri):
+        """
+        Wrapper function for saving a file as a tiledb array
+        :param model: notebook model to write
+        :param uri: array URI to write
+        :return:
+        """
         file_contents = model["content"]
         return self._write_bytes_to_array(
             uri, file_contents, model.get("mimetype"), model.get("format"), "file"
         )
 
     def tiledb_uri_from_path(self, path):
+        """
+        Build a tiledb:// URI from a notebook cloud path
+        :param path:
+        :return: tiledb uri
+        """
 
         parts = path.split(os.sep)
         if len(parts) == 1:
@@ -332,6 +376,7 @@ class TileDBContents(ContentsManager):
                     model["writable"] = False
                 with tiledb.open(tiledb_uri, ctx=tiledb.cloud.Ctx()) as A:
                     meta = A.meta
+                    # Get metadata information
                     if "mimetype" in meta:
                         model["mimetype"] = meta["mimetype"]
                     if "format" in meta:
@@ -480,7 +525,10 @@ class TileDBContents(ContentsManager):
 
 
 class TileDBCheckpoints(GenericFileCheckpoints, TileDBContents, Checkpoints):
-    """requires the following methods:"""
+    """
+    A wrapper of a class which will in the future support checkpoints by time traveling.
+    It inherts from GenericFileCheckpoints for local notebooks
+    """
 
     def _tiledb_checkpoint_model(self):
         return dict(id="checkpoints-not-supported", last_modified=DUMMY_CREATED_DATE,)
@@ -543,12 +591,23 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         super(FileContentsManager, self).__init__(**kwargs)
 
     def _checkpoints_class_default(self):
-        # return NoOpCheckpoints
+        """
+        Set checkpoint class to custom checkpoint class
+        :return:
+        """
         return TileDBCheckpoints
 
     def __list_namespace(self, category, namespace, content=False):
+        """
+        List all notebook arrays in a namespace, this is setup to mimic a "ls" of a directory
+        :param category: category to list, shared, owned or public
+        :param namespace: namespace to list
+        :param content: should contents be included
+        :return: model of namespace
+        """
         arrays = []
         try:
+            # fetch arrays from the category
             if category == "owned":
                 arrays = tiledb.cloud.client.list_arrays(
                     tag=TAG_JUPYTER_NOTEBOOK, namespace=namespace
@@ -573,6 +632,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         model = base_directory_model(namespace)
         model["path"] = "cloud/{}/{}".format(category, namespace)
         if content:
+            # Build model content if asked for
             model["format"] = "json"
             model["content"] = []
             for notebook in arrays:
@@ -669,6 +729,10 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         return model
 
     def __build_cloud_notebook_lists(self):
+        """
+        Build a list of all notebooks across all categories
+        :return:
+        """
 
         ret = {
             "owned": base_directory_model("owned"),
