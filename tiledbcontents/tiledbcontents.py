@@ -22,6 +22,8 @@ NBFORMAT_VERSION = 4
 
 NOTEBOOK_MIME = "application/x-ipynb+json"
 
+NOTEBOOK_EXT = ".ipynb"
+
 TAG_JUPYTER_NOTEBOOK = "__jupyter-notebook"
 
 
@@ -213,18 +215,6 @@ class TileDBContents(ContentsManager):
                 parts = uri.split("/")
                 parts_length = len(parts)
                 array_name = parts[parts_length - 1]
-                #
-                # name_parts = array_name.split("-")
-                # name_parts_length = len(name_parts)
-                # if name_parts_length > 1:
-                #     intVal = name_parts[name_parts_length - 1]
-                #     intVal = int(intVal) + 1
-                #     name_parts[name_parts_length - 1] = str(intVal)
-                #     array_name = "-".join(name_parts)
-                # else:
-                #     array_name += "-1"
-
-                # path
 
                 array_name = self._increment_filename(array_name)
 
@@ -257,8 +247,6 @@ class TileDBContents(ContentsManager):
         self, uri, contents, mimetype=None, format=None, type=None
     ):
         tiledb_uri = self.tiledb_uri_from_path(uri)
-        # if not self.vfs.is_dir(uri):
-        #     self.__create_array(uri)
         final_array_name = None
         if not self._array_exists(uri):
             name = tiledb_uri.split("/")
@@ -283,22 +271,6 @@ class TileDBContents(ContentsManager):
             uri, file_contents, model.get("mimetype"), model.get("format"), "file"
         )
 
-    # def __create_directory_and_group(self, path):
-    #     """
-    #
-    #     :param path:
-    #     :return:
-    #     """
-    #     try:
-    #         if not self.vfs.is_dir(path):
-    #             self.vfs.create_dir(path)
-    #         elif tiledb.object_type(path) == "group":
-    #             return
-    #
-    #         tiledb.group_create(path)
-    #     except tiledb.TileDBError as e:
-    #         raise http_error(500, e.message)
-
     def tiledb_uri_from_path(self, path):
 
         parts = path.split(os.sep)
@@ -313,6 +285,7 @@ class TileDBContents(ContentsManager):
         Build a notebook model from database record.
         """
         model = base_model(uri)
+
         model["type"] = "notebook"
         if content:
             tiledb_uri = self.tiledb_uri_from_path(uri)
@@ -323,12 +296,14 @@ class TileDBContents(ContentsManager):
                     model["writable"] = False
                 with tiledb.open(tiledb_uri, ctx=tiledb.cloud.Ctx()) as A:
                     meta = A.meta
-                    file_content = A[slice(0, meta["file_size"])]
-                    nb_content = reads(
-                        file_content["contents"].tostring().decode("utf-8"),
-                        as_version=NBFORMAT_VERSION,
-                    )
-                    self.mark_trusted_cells(nb_content, uri)
+                    nb_content = []
+                    if "file_size" in meta:
+                        file_content = A[slice(0, meta["file_size"])]
+                        nb_content = reads(
+                            file_content["contents"].tostring().decode("utf-8"),
+                            as_version=NBFORMAT_VERSION,
+                        )
+                        self.mark_trusted_cells(nb_content, uri)
                     model["format"] = "json"
                     model["content"] = nb_content
                     self.validate_notebook_model(model)
@@ -348,10 +323,6 @@ class TileDBContents(ContentsManager):
         model = base_model(uri)
         model["type"] = "file"
 
-        # if self.fs.isfile(uri):
-        #     model["last_modified"] = model["created"] = self.fs.lstat(path)["ST_MTIME"]
-        # else:
-        #     model["last_modified"] = model["created"] = DUMMY_CREATED_DATE
         if content:
             tiledb_uri = self.tiledb_uri_from_path(uri)
             try:
@@ -370,10 +341,28 @@ class TileDBContents(ContentsManager):
 
                     if "type" in meta:
                         model["type"] = meta["type"]
-                    file_content = A[slice(0, meta["file_size"])]
-                    nb_content = file_content["contents"]
-                    model["content"] = nb_content
-                    self.validate_notebook_model(model)
+
+                    file_content = None
+                    if "file_size" in meta:
+                        file_content = A[slice(0, meta["file_size"])]
+                        nb_content = file_content["contents"]
+                        model["content"] = nb_content
+                    else:
+                        model["content"] = []
+
+                    if (
+                        "type" in meta
+                        and meta["type"] == "notebook"
+                        and file_content is not None
+                    ):
+                        nb_content = reads(
+                            file_content["contents"].tostring().decode("utf-8"),
+                            as_version=NBFORMAT_VERSION,
+                        )
+                        self.mark_trusted_cells(nb_content, uri)
+                        model["format"] = "json"
+                        model["content"] = nb_content
+                        self.validate_notebook_model(model)
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
                 raise http_error(500, "Error fetching file info: {}".format(str(e)))
             except tiledb.TileDBError as e:
@@ -389,7 +378,6 @@ class TileDBContents(ContentsManager):
         :param path:
         :return:
         """
-        # if path.startswith("cloud/public") or path.startswith("cloud/shared") or path.startswith("cloud/mine"):
         if path.split(os.sep)[0] == "cloud" or path.split("/")[0] == "cloud":
             return True
         return False
@@ -429,24 +417,18 @@ class TileDBContents(ContentsManager):
         ----------
             obj: s3.Object or string
         """
-        pathFixed = path.strip("/")
-        if self._is_remote_path(pathFixed):
-            if self._is_remote_dir(pathFixed):
+        path_fixed = path.strip("/")
+        if self._is_remote_path(path_fixed):
+            if self._is_remote_dir(path_fixed):
                 return "directory"
             else:
+                if path_fixed.endswith(NOTEBOOK_EXT):
+                    path_fixed = path_fixed[: -1 * len(NOTEBOOK_EXT)]
                 try:
-                    tiledb_uri = self.tiledb_uri_from_path(pathFixed)
+                    tiledb_uri = self.tiledb_uri_from_path(path_fixed)
                     return self._get_type(tiledb_uri)
-                    # if self.__get_mimetype(tiledb_uri) == NOTEBOOK_MIME:
-                    #     return "notebook"
-                    # else:
-                    #     return "file"
                 except Exception as e:
                     return "directory"
-            # self.log.error("Error while saving file: %s %s", path, e, exc_info=True)
-            # raise http_error(
-            #     500, "Unexpected error while saving file: %s %s" % (path, e)
-            # )
             return "file"
 
         if path.endswith(".ipynb"):
@@ -505,51 +487,51 @@ class TileDBCheckpoints(GenericFileCheckpoints, TileDBContents, Checkpoints):
 
     def create_file_checkpoint(self, content, format, path):
         """ -> checkpoint model"""
-        pathFixed = path.strip("/")
-        if not self._is_remote_path(pathFixed):
+        path_fixed = path.strip("/")
+        if not self._is_remote_path(path_fixed):
             return super().create_file_checkpoint(content, format, path)
 
         return self._tiledb_checkpoint_model()
 
     def create_notebook_checkpoint(self, nb, path):
         """ -> checkpoint model"""
-        pathFixed = path.strip("/")
-        if not self._is_remote_path(pathFixed):
+        path_fixed = path.strip("/")
+        if not self._is_remote_path(path_fixed):
             return super().create_notebook_checkpoint(nb, path)
 
         return self._tiledb_checkpoint_model()
 
     def get_file_checkpoint(self, checkpoint_id, path):
         """ -> {'type': 'file', 'content': <str>, 'format': {'text', 'base64'}}"""
-        pathFixed = path.strip("/")
-        if not self._is_remote_path(pathFixed):
+        path_fixed = path.strip("/")
+        if not self._is_remote_path(path_fixed):
             return super().get_file_checkpoint(checkpoint_id, path)
 
     def get_notebook_checkpoint(self, checkpoint_id, path):
         """ -> {'type': 'notebook', 'content': <output of nbformat.read>}"""
-        pathFixed = path.strip("/")
-        if not self._is_remote_path(pathFixed):
+        path_fixed = path.strip("/")
+        if not self._is_remote_path(path_fixed):
             return super().get_notebook_checkpoint(checkpoint_id, path)
 
     def delete_checkpoint(self, checkpoint_id, path):
         """deletes a checkpoint for a file"""
-        pathFixed = path.strip("/")
-        if not self._is_remote_path(pathFixed):
+        path_fixed = path.strip("/")
+        if not self._is_remote_path(path_fixed):
             return super().delete_checkpoint(checkpoint_id, path)
 
     def list_checkpoints(self, path):
         """returns a list of checkpoint models for a given file,
         default just does one per file
         """
-        pathFixed = path.strip("/")
-        if not self._is_remote_path(pathFixed):
+        path_fixed = path.strip("/")
+        if not self._is_remote_path(path_fixed):
             return super().list_checkpoints(path)
         return []
 
     def rename_checkpoint(self, checkpoint_id, old_path, new_path):
         """renames checkpoint from old path to new path"""
-        pathFixed = old_path.strip("/")
-        if not self._is_remote_path(pathFixed):
+        path_fixed = old_path.strip("/")
+        if not self._is_remote_path(path_fixed):
             return super().rename_checkpoint(checkpoint_id, old_path, new_path)
 
 
@@ -595,11 +577,15 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             model["content"] = []
             for notebook in arrays:
                 nbmodel = base_model(notebook.name)
-                nbmodel["path"] = "cloud/{}/{}/{}".format(
-                    category, namespace, nbmodel["path"]
+
+                # Add notebook extension to name, so jupyterlab will open with as a notebook
+                # It seems to check the extension even though we set the "type" parameter
+                nbmodel["path"] = "cloud/{}/{}/{}{}".format(
+                    category, namespace, nbmodel["path"], NOTEBOOK_EXT
                 )
                 nbmodel["last_modified"] = notebook.last_accessed
                 nbmodel["type"] = "notebook"
+
                 if "write" not in notebook.allowed_actions:
                     model["writable"] = False
                 model["content"].append(nbmodel)
@@ -615,8 +601,6 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         """
         arrays = []
         try:
-            # if category == "owned":
-            #     arrays = tiledb.cloud.client.list_arrays(tag=TAG_JUPYTER_NOTEBOOK)
             if category == "shared":
                 arrays = tiledb.cloud.client.list_shared_arrays(
                     tag=TAG_JUPYTER_NOTEBOOK
@@ -711,7 +695,11 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                     model = base_model(notebook.name)
                     model["type"] = "notebook"
                     model["last_modified"] = notebook.last_accessed
-                    model["path"] = "cloud/{}/{}".format("owned", model["path"])
+                    # Add notebook extension to path, so jupyterlab will open with as a notebook
+                    # It seems to check the extension even though we set the "type" parameter
+                    model["path"] = "cloud/{}/{}{}".format(
+                        "owned", model["path"], NOTEBOOK_EXT
+                    )
                     ret["owned"]["content"].append(model)
 
             if len(shared_notebooks) > 0:
@@ -721,7 +709,11 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                     model = base_model(notebook.name)
                     model["type"] = "notebook"
                     model["last_modified"] = notebook.last_accessed
-                    model["path"] = "cloud/{}/{}".format("shared", model["path"])
+                    # Add notebook extension to path, so jupyterlab will open with as a notebook
+                    # It seems to check the extension even though we set the "type" parameter
+                    model["path"] = "cloud/{}/{}{}".format(
+                        "shared", model["path"], NOTEBOOK_EXT
+                    )
                     ret["shared"]["content"].append(model)
 
             if len(public_notebooks) > 0:
@@ -731,7 +723,11 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                     model = base_model(notebook.name)
                     model["type"] = "notebook"
                     model["last_modified"] = notebook.last_accessed
-                    model["path"] = "cloud/{}/{}".format("public", model["path"])
+                    # Add notebook extension to path, so jupyterlab will open with as a notebook
+                    # It seems to check the extension even though we set the "type" parameter
+                    model["path"] = "cloud/{}/{}{}".format(
+                        "public", model["path"], NOTEBOOK_EXT
+                    )
                     ret["public"]["content"].append(model)
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
             raise http_error(
@@ -825,32 +821,35 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
 
     def get(self, path, content=True, type=None, format=None):
         """Get a file or directory model."""
-        pathFixed = path.strip("/")
+        path_fixed = path.strip("/")
 
-        if pathFixed == "" or pathFixed is None:
-            pathFixed = "."
+        if path_fixed == "" or path_fixed is None:
+            path_fixed = "."
 
-        if not self._is_remote_path(pathFixed):
+        if not self._is_remote_path(path_fixed):
             model = super().get(path, content, type, format)
-            if pathFixed == "." and content:
+            if path_fixed == "." and content:
                 cloud = base_directory_model("cloud")
                 cloud["content"] = self.__build_cloud_notebook_lists()
                 model["content"].append(cloud)
 
             return model
 
+        if path_fixed.endswith(NOTEBOOK_EXT):
+            path_fixed = path_fixed[: -1 * len(NOTEBOOK_EXT)]
+
         if type is None:
-            if self._is_remote_dir(pathFixed):
+            if self._is_remote_dir(path_fixed):
                 type = "directory"
             else:
                 type = self.guess_type(path, allow_directory=True)
 
         if type == "notebook":
-            return self._notebook_from_array(pathFixed, content)
+            return self._notebook_from_array(path_fixed, content)
         elif type == "file":
-            return self._file_from_array(pathFixed, content, format)
+            return self._file_from_array(path_fixed, content, format)
         elif type == "directory":
-            return self.__directory_model_from_path(pathFixed, content)
+            return self.__directory_model_from_path(path_fixed, content)
             # if model is not None:
             #     model.
 
@@ -862,10 +861,10 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         writing any data.
         """
         self.run_pre_save_hook(model=model, path=path)
-        pathFixed = path.strip("/")
+        path_fixed = path.strip("/")
 
-        if pathFixed == "" or pathFixed is None:
-            pathFixed = "."
+        if path_fixed == "" or path_fixed is None:
+            path_fixed = "."
 
         if "type" not in model:
             raise http_error(400, u"No file type provided")
@@ -875,17 +874,20 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         if model["type"] not in ("directory", "file", "notebook"):
             raise http_error(400, "Unhandled contents type: %s" % model["type"])
 
-        if not self._is_remote_path(pathFixed):
+        if not self._is_remote_path(path_fixed):
             return super().save(model, path)
+
+        if path_fixed.endswith(NOTEBOOK_EXT):
+            path_fixed = path_fixed[: -1 * len(NOTEBOOK_EXT)]
 
         validation_message = None
         try:
             if model["type"] == "notebook":
-                validation_message = self._save_notebook_tiledb(model, pathFixed)
+                validation_message = self._save_notebook_tiledb(model, path_fixed)
             elif model["type"] == "file":
-                validation_message = self._save_file_tiledb(model, pathFixed)
+                validation_message = self._save_file_tiledb(model, path_fixed)
             else:
-                if self._is_remote_path(pathFixed):
+                if self._is_remote_path(path_fixed):
                     raise http_error(
                         400,
                         "Trying to create unsupported type: %s in cloud"
@@ -905,12 +907,13 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
 
     def delete_file(self, path):
         """Delete the file or directory at path."""
-        # if self.vfs.is_file(path):
-        #     self.vfs.remove_file(path)
-        # else:
-        #     self.vfs.remove_dir(path)
-        if self._is_remote_path(path):
-            tiledb_uri = self.tiledb_uri_from_path(path)
+        path_fixed = path.strip("/")
+        if self._is_remote_path(path_fixed):
+
+            if path_fixed.endswith(NOTEBOOK_EXT):
+                path_fixed = path_fixed[: -1 * len(NOTEBOOK_EXT)]
+
+            tiledb_uri = self.tiledb_uri_from_path(path_fixed)
             try:
                 return tiledb.cloud.array.deregister_array(tiledb_uri)
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
@@ -926,7 +929,6 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
 
     def rename_file(self, old_path, new_path):
         """Rename a file or directory."""
-        # self.vfs.move_file(old_path, new_path)
         return super().rename(old_path, new_path)
 
     # ContentsManager API part 2: methods that have useable default
@@ -948,8 +950,8 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         if path == "" or path is None:
             path = "."
 
-        pathFixed = path.strip("/")
-        if self._is_remote_dir(pathFixed):
+        path_fixed = path.strip("/")
+        if self._is_remote_dir(path_fixed):
             return True
 
         return super().dir_exists(path)
@@ -966,8 +968,8 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         hidden : bool
             Whether the path is hidden.
         """
-        pathFixed = path.strip("/")
-        if self._is_remote_path(pathFixed):
+        path_fixed = path.strip("/")
+        if self._is_remote_path(path_fixed):
             return False
 
         return super().is_hidden(path)
@@ -988,7 +990,9 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         # if path == "" or path is None:
         #     path = "."
 
-        pathFixed = path.strip("/")
-        if self._is_remote_path(pathFixed):
-            return self._array_exists(pathFixed)
+        path_fixed = path.strip("/")
+        if self._is_remote_path(path_fixed):
+            if path_fixed.endswith(NOTEBOOK_EXT):
+                path_fixed = path_fixed[: -1 * len(NOTEBOOK_EXT)]
+            return self._array_exists(path_fixed)
         return super().file_exists(path)
