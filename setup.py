@@ -6,7 +6,7 @@
 
 from setuptools import setup, find_namespace_packages
 
-NAME = "tiledb-contents"
+NAME = "tiledbcontents"
 
 # To install the library, run the following
 #
@@ -34,7 +34,7 @@ setup(
     install_requires=REQUIRES,
     packages=find_namespace_packages(include=["tiledbcontents"]),
     include_package_data=True,
-    zip_safe=True,
+    zip_safe=False,
     use_scm_version={
         "version_scheme": "guess-next-dev",
         "local_scheme": "dirty-tag",
