@@ -24,6 +24,25 @@ NOTEBOOK_EXT = ".ipynb"
 TAG_JUPYTER_NOTEBOOK = "__jupyter-notebook"
 
 
+def get_cloud_enabled():
+    """
+    Check if a user is allowed to access notebook sharing
+    """
+
+    try:
+        profile = tiledb.cloud.client.user_profile()
+        if "notebook_sharing" in set(profile.enabled_features):
+            return True
+
+    except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+        raise http_error(
+            400,
+            "Error fetching user default s3 path for new notebooks {}".format(str(e)),
+        )
+
+    return False
+
+
 def http_error(code, message):
     return HTTPError(code=code, message=message, reason=message)
 
@@ -892,7 +911,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
 
         if not self._is_remote_path(path_fixed):
             model = super().get(path, content, type, format)
-            if path_fixed == "." and content:
+            if path_fixed == "." and content and get_cloud_enabled():
                 cloud = base_directory_model("cloud")
                 cloud["content"] = self.__build_cloud_notebook_lists()
                 model["content"].append(cloud)
