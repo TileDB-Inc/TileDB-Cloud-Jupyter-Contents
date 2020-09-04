@@ -112,3 +112,5 @@ tiledbcontents/version.py
 .idea
 
 *.DS_Store
+
+local_notebooks

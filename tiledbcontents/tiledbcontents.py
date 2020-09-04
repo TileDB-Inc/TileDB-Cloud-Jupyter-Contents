@@ -143,7 +143,7 @@ class TileDBContents(ContentsManager):
         )
 
         self.validate_notebook_model(model)
-        return model.get("message")
+        return final_name, model.get("message")
 
     def _increment_filename(self, filename, insert="-"):
         """Increment a filename until it is unique.
@@ -188,7 +188,7 @@ class TileDBContents(ContentsManager):
         )
         return name
 
-    def _create_array(self, uri, name, retry=0):
+    def _create_array(self, uri, retry=0):
         """
         Create a new array for storing notebook file
         :param uri: location to create array
@@ -216,7 +216,7 @@ class TileDBContents(ContentsManager):
                     tiledb.Attr(
                         name="contents",
                         dtype=numpy.uint8,
-                        filters=tiledb.FilterList(tiledb.ZstdFilter()),
+                        filters=tiledb.FilterList([tiledb.ZstdFilter()]),
                     )
                 ],
                 ctx=tiledb.cloud.Ctx(),
@@ -244,10 +244,10 @@ class TileDBContents(ContentsManager):
             tiledb_uri = "tiledb://{}/{}".format(namespace, array_name)
             time.sleep(0.25)
             tiledb.cloud.array.update_info(
-                uri=tiledb_uri, array_name=name, tags=[TAG_JUPYTER_NOTEBOOK]
+                uri=tiledb_uri, array_name=array_name, tags=[TAG_JUPYTER_NOTEBOOK]
             )
 
-            return array_name
+            return tiledb_uri, array_name
         except tiledb.TileDBError as e:
             if "already exists" in str(e):
                 parts = uri.split("/")
@@ -259,10 +259,10 @@ class TileDBContents(ContentsManager):
                 parts[parts_length - 1] = array_name
                 uri = "/".join(parts)
 
-                return self._create_array(uri, name, retry)
+                return self._create_array(uri, retry)
             elif retry:
                 retry -= 1
-                return self._create_array(uri, name, retry)
+                return self._create_array(uri, retry)
         except HTTPError as e:
             raise e
         except Exception as e:
@@ -300,10 +300,9 @@ class TileDBContents(ContentsManager):
         """
         tiledb_uri = self.tiledb_uri_from_path(uri)
         final_array_name = None
-        if not self._array_exists(uri):
-            name = tiledb_uri.split("/")
-            name = name[len(name) - 1]
-            final_array_name = self._create_array(tiledb_uri, name, 5)
+        if self._is_new:
+            # if not self._array_exists(uri):
+            tiledb_uri, final_array_name = self._create_array(tiledb_uri, 5)
 
         with tiledb.open(tiledb_uri, mode="w", ctx=tiledb.cloud.Ctx()) as A:
             A[range(len(contents))] = {"contents": contents}
@@ -546,7 +545,7 @@ class TileDBContents(ContentsManager):
 class TileDBCheckpoints(GenericFileCheckpoints, TileDBContents, Checkpoints):
     """
     A wrapper of a class which will in the future support checkpoints by time traveling.
-    It inherts from GenericFileCheckpoints for local notebooks
+    It inherits from GenericFileCheckpoints for local notebooks
     """
 
     def _tiledb_checkpoint_model(self):
@@ -629,15 +628,15 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             # fetch arrays from the category
             if category == "owned":
                 arrays = tiledb.cloud.client.list_arrays(
-                    tag=TAG_JUPYTER_NOTEBOOK, namespace=namespace
+                    tag=[TAG_JUPYTER_NOTEBOOK], namespace=namespace
                 )
             elif category == "shared":
                 arrays = tiledb.cloud.client.list_shared_arrays(
-                    tag=TAG_JUPYTER_NOTEBOOK, namespace=namespace
+                    tag=[TAG_JUPYTER_NOTEBOOK], namespace=namespace
                 )
             elif category == "public":
                 arrays = tiledb.cloud.client.list_public_arrays(
-                    tag=TAG_JUPYTER_NOTEBOOK, namespace=namespace
+                    tag=[TAG_JUPYTER_NOTEBOOK], namespace=namespace
                 )
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
             raise http_error(
@@ -654,20 +653,21 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             # Build model content if asked for
             model["format"] = "json"
             model["content"] = []
-            for notebook in arrays:
-                nbmodel = base_model(notebook.name)
+            if arrays is not None:
+                for notebook in arrays:
+                    nbmodel = base_model(notebook.name)
 
-                # Add notebook extension to name, so jupyterlab will open with as a notebook
-                # It seems to check the extension even though we set the "type" parameter
-                nbmodel["path"] = "cloud/{}/{}/{}{}".format(
-                    category, namespace, nbmodel["path"], NOTEBOOK_EXT
-                )
-                nbmodel["last_modified"] = notebook.last_accessed
-                nbmodel["type"] = "notebook"
+                    # Add notebook extension to name, so jupyterlab will open with as a notebook
+                    # It seems to check the extension even though we set the "type" parameter
+                    nbmodel["path"] = "cloud/{}/{}/{}{}".format(
+                        category, namespace, nbmodel["path"], NOTEBOOK_EXT
+                    )
+                    nbmodel["last_modified"] = notebook.last_accessed
+                    nbmodel["type"] = "notebook"
 
-                if "write" not in notebook.allowed_actions:
-                    model["writable"] = False
-                model["content"].append(nbmodel)
+                    if "write" not in notebook.allowed_actions:
+                        model["writable"] = False
+                    model["content"].append(nbmodel)
 
         return model
 
@@ -682,11 +682,11 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         try:
             if category == "shared":
                 arrays = tiledb.cloud.client.list_shared_arrays(
-                    tag=TAG_JUPYTER_NOTEBOOK
+                    tag=[TAG_JUPYTER_NOTEBOOK]
                 )
             elif category == "public":
                 arrays = tiledb.cloud.client.list_public_arrays(
-                    tag=TAG_JUPYTER_NOTEBOOK
+                    tag=[TAG_JUPYTER_NOTEBOOK]
                 )
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
             raise http_error(
@@ -759,59 +759,62 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             "shared": base_directory_model("shared"),
         }
         try:
-            owned_notebooks = tiledb.cloud.client.list_arrays(tag=TAG_JUPYTER_NOTEBOOK)
+            owned_notebooks = tiledb.cloud.client.list_arrays(tag=[TAG_JUPYTER_NOTEBOOK])
             shared_notebooks = tiledb.cloud.client.list_shared_arrays(
-                tag=TAG_JUPYTER_NOTEBOOK
+                tag=[TAG_JUPYTER_NOTEBOOK]
             )
             public_notebooks = tiledb.cloud.client.list_public_arrays(
-                tag=TAG_JUPYTER_NOTEBOOK
+                tag=[TAG_JUPYTER_NOTEBOOK]
             )
 
             ret["owned"]["path"] = "cloud/owned"
             ret["public"]["path"] = "cloud/public"
             ret["shared"]["path"] = "cloud/shared"
 
-            if len(owned_notebooks) > 0:
-                ret["owned"]["format"] = "json"
-                ret["owned"]["content"] = []
-                for notebook in owned_notebooks:
-                    model = base_model(notebook.name)
-                    model["type"] = "notebook"
-                    model["last_modified"] = notebook.last_accessed
-                    # Add notebook extension to path, so jupyterlab will open with as a notebook
-                    # It seems to check the extension even though we set the "type" parameter
-                    model["path"] = "cloud/{}/{}{}".format(
-                        "owned", model["path"], NOTEBOOK_EXT
-                    )
-                    ret["owned"]["content"].append(model)
+            if owned_notebooks is not None:
+                if len(owned_notebooks) > 0:
+                    ret["owned"]["format"] = "json"
+                    ret["owned"]["content"] = []
+                    for notebook in owned_notebooks:
+                        model = base_model(notebook.name)
+                        model["type"] = "notebook"
+                        model["last_modified"] = notebook.last_accessed
+                        # Add notebook extension to path, so jupyterlab will open with as a notebook
+                        # It seems to check the extension even though we set the "type" parameter
+                        model["path"] = "cloud/{}/{}{}".format(
+                            "owned", model["path"], NOTEBOOK_EXT
+                        )
+                        ret["owned"]["content"].append(model)
 
-            if len(shared_notebooks) > 0:
-                ret["shared"]["format"] = "json"
-                ret["shared"]["content"] = []
-                for notebook in owned_notebooks:
-                    model = base_model(notebook.name)
-                    model["type"] = "notebook"
-                    model["last_modified"] = notebook.last_accessed
-                    # Add notebook extension to path, so jupyterlab will open with as a notebook
-                    # It seems to check the extension even though we set the "type" parameter
-                    model["path"] = "cloud/{}/{}{}".format(
-                        "shared", model["path"], NOTEBOOK_EXT
-                    )
-                    ret["shared"]["content"].append(model)
+            if shared_notebooks is not None:
+                if len(shared_notebooks) > 0:
+                    ret["shared"]["format"] = "json"
+                    ret["shared"]["content"] = []
+                    for notebook in shared_notebooks:
+                        model = base_model(notebook.name)
+                        model["type"] = "notebook"
+                        model["last_modified"] = notebook.last_accessed
+                        # Add notebook extension to path, so jupyterlab will open with as a notebook
+                        # It seems to check the extension even though we set the "type" parameter
+                        model["path"] = "cloud/{}/{}{}".format(
+                            "shared", model["path"], NOTEBOOK_EXT
+                        )
+                        ret["shared"]["content"].append(model)
 
-            if len(public_notebooks) > 0:
-                ret["public"]["format"] = "json"
-                ret["public"]["content"] = []
-                for notebook in owned_notebooks:
-                    model = base_model(notebook.name)
-                    model["type"] = "notebook"
-                    model["last_modified"] = notebook.last_accessed
-                    # Add notebook extension to path, so jupyterlab will open with as a notebook
-                    # It seems to check the extension even though we set the "type" parameter
-                    model["path"] = "cloud/{}/{}{}".format(
-                        "public", model["path"], NOTEBOOK_EXT
-                    )
-                    ret["public"]["content"].append(model)
+            if public_notebooks is not None:
+                if len(public_notebooks) > 0:
+                    ret["public"]["format"] = "json"
+                    ret["public"]["content"] = []
+                    for notebook in public_notebooks:
+                        model = base_model(notebook.name)
+                        model["type"] = "notebook"
+                        model["last_modified"] = notebook.last_accessed
+                        # Add notebook extension to path, so jupyterlab will open with as a notebook
+                        # It seems to check the extension even though we set the "type" parameter
+                        model["path"] = "cloud/{}/{}{}".format(
+                            "public", model["path"], NOTEBOOK_EXT
+                        )
+                        ret["public"]["content"].append(model)
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
             raise http_error(
                 500, "Error building cloud notebook info: {}".format(str(e))
@@ -963,10 +966,19 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         if path_fixed.endswith(NOTEBOOK_EXT):
             path_fixed = path_fixed[: -1 * len(NOTEBOOK_EXT)]
 
+        self._is_new = True
+        if 'language_info' in model['content']['metadata']:
+            self._is_new = False
+
         validation_message = None
         try:
             if model["type"] == "notebook":
-                validation_message = self._save_notebook_tiledb(model, path_fixed)
+                final_name, validation_message = self._save_notebook_tiledb(model, path_fixed)
+                if final_name is not None:
+                    parts = path.split("/")
+                    parts_length = len(parts)
+                    parts[parts_length - 1] = final_name
+                    path = "/".join(parts)
             elif model["type"] == "file":
                 validation_message = self._save_file_tiledb(model, path_fixed)
             else:
@@ -1012,9 +1024,31 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
 
     def rename_file(self, old_path, new_path):
         """Rename a file or directory."""
-        return super().rename(old_path, new_path)
+        old_path_fixed = old_path.strip("/")
+        if self._is_remote_path(old_path_fixed):
 
-    # ContentsManager API part 2: methods that have useable default
+            if old_path_fixed.endswith(NOTEBOOK_EXT):
+                old_path_fixed = old_path_fixed[: -1 * len(NOTEBOOK_EXT)]
+
+            tiledb_uri = self.tiledb_uri_from_path(old_path_fixed)
+            parts_new= new_path.split("/")
+            parts_new_length = len(parts_new)
+            array_name_new =  parts_new[parts_new_length - 1]
+
+            try:
+                tiledb.cloud.notebook.rename_notebook(uri=tiledb_uri, notebook_name=array_name_new)
+            except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+                raise http_error(
+                    500, "Error renaming {}: ".format(tiledb_uri, str(e))
+                )
+            except tiledb.TileDBError as e:
+                raise http_error(
+                    500, str(e),
+                )
+        else:
+            return super().rename(old_path, new_path)
+
+    # ContentsManager API part 2: methods that have usable default
     # implementations, but can be overridden in subclasses.
 
     def dir_exists(self, path):

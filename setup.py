@@ -21,8 +21,8 @@ REQUIRES = [
     "setuptools>=18.0",
     "setuptools-scm>=1.5.4",
     "setuptools-scm-git-archive",
-    "tiledb>=0.5.6",
-    "tiledb-cloud>=0.5.5",
+    "tiledb>=0.6.6",
+    "tiledb-cloud>=0.6.2",
 ]
 
 setup(
