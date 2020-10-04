@@ -373,7 +373,8 @@ class TileDBContents(ContentsManager):
                 raise http_error(400, "Error fetching notebook info: {}".format(str(e)))
             except tiledb.TileDBError as e:
                 raise http_error(
-                    500, str(e),
+                    500,
+                    str(e),
                 )
 
         return model
@@ -430,7 +431,8 @@ class TileDBContents(ContentsManager):
                 raise http_error(500, "Error fetching file info: {}".format(str(e)))
             except tiledb.TileDBError as e:
                 raise http_error(
-                    500, str(e),
+                    500,
+                    str(e),
                 )
 
         return model
@@ -516,7 +518,8 @@ class TileDBContents(ContentsManager):
             raise http_error(500, "Error getting mimetype: {}".format(str(e)))
         except tiledb.TileDBError as e:
             raise http_error(
-                500, str(e),
+                500,
+                str(e),
             )
 
         return None
@@ -536,7 +539,8 @@ class TileDBContents(ContentsManager):
             raise http_error(500, "Error getting type: {}".format(str(e)))
         except tiledb.TileDBError as e:
             raise http_error(
-                500, str(e),
+                500,
+                str(e),
             )
 
         return None
@@ -549,7 +553,10 @@ class TileDBCheckpoints(GenericFileCheckpoints, TileDBContents, Checkpoints):
     """
 
     def _tiledb_checkpoint_model(self):
-        return dict(id="checkpoints-not-supported", last_modified=DUMMY_CREATED_DATE,)
+        return dict(
+            id="checkpoints-not-supported",
+            last_modified=DUMMY_CREATED_DATE,
+        )
 
     def create_file_checkpoint(self, content, format, path):
         """ -> checkpoint model"""
@@ -629,22 +636,23 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             if category == "owned":
                 arrays = tiledb.cloud.client.list_arrays(
                     tag=[TAG_JUPYTER_NOTEBOOK], namespace=namespace
-                )
+                ).arrays
             elif category == "shared":
                 arrays = tiledb.cloud.client.list_shared_arrays(
                     tag=[TAG_JUPYTER_NOTEBOOK], namespace=namespace
-                )
+                ).arrays
             elif category == "public":
                 arrays = tiledb.cloud.client.list_public_arrays(
                     tag=[TAG_JUPYTER_NOTEBOOK], namespace=namespace
-                )
+                ).arrays
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
             raise http_error(
                 500, "Error listing notebooks in {}: ".format(namespace, str(e))
             )
         except tiledb.TileDBError as e:
             raise http_error(
-                500, str(e),
+                500,
+                str(e),
             )
 
         model = base_directory_model(namespace)
@@ -683,18 +691,19 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             if category == "shared":
                 arrays = tiledb.cloud.client.list_shared_arrays(
                     tag=[TAG_JUPYTER_NOTEBOOK]
-                )
+                ).arrays
             elif category == "public":
                 arrays = tiledb.cloud.client.list_public_arrays(
                     tag=[TAG_JUPYTER_NOTEBOOK]
-                )
+                ).arrays
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
             raise http_error(
                 500, "Error listing notebooks in {}: {}".format(category, str(e))
             )
         except tiledb.TileDBError as e:
             raise http_error(
-                500, str(e),
+                500,
+                str(e),
             )
 
         model = base_directory_model(category)
@@ -731,7 +740,8 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                     )
                 except tiledb.TileDBError as e:
                     raise http_error(
-                        500, str(e),
+                        500,
+                        str(e),
                     )
 
             else:
@@ -759,18 +769,23 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             "shared": base_directory_model("shared"),
         }
         try:
-            owned_notebooks = tiledb.cloud.client.list_arrays(tag=[TAG_JUPYTER_NOTEBOOK])
+            owned_notebooks = tiledb.cloud.client.list_arrays(
+                tag=[TAG_JUPYTER_NOTEBOOK], async_req=True
+            )
             shared_notebooks = tiledb.cloud.client.list_shared_arrays(
-                tag=[TAG_JUPYTER_NOTEBOOK]
+                tag=[TAG_JUPYTER_NOTEBOOK], async_req=True
             )
             public_notebooks = tiledb.cloud.client.list_public_arrays(
-                tag=[TAG_JUPYTER_NOTEBOOK]
+                tag=[TAG_JUPYTER_NOTEBOOK], async_req=True
             )
 
             ret["owned"]["path"] = "cloud/owned"
             ret["public"]["path"] = "cloud/public"
             ret["shared"]["path"] = "cloud/shared"
 
+            owned_notebooks = owned_notebooks.get().arrays
+            shared_notebooks = shared_notebooks.get().arrays
+            public_notebooks = public_notebooks.get().arrays
             if owned_notebooks is not None:
                 if len(owned_notebooks) > 0:
                     ret["owned"]["format"] = "json"
@@ -821,7 +836,8 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             )
         except tiledb.TileDBError as e:
             raise http_error(
-                500, str(e),
+                500,
+                str(e),
             )
 
         return list(ret.values())
@@ -967,13 +983,15 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             path_fixed = path_fixed[: -1 * len(NOTEBOOK_EXT)]
 
         self._is_new = True
-        if 'language_info' in model['content']['metadata']:
+        if "language_info" in model["content"]["metadata"]:
             self._is_new = False
 
         validation_message = None
         try:
             if model["type"] == "notebook":
-                final_name, validation_message = self._save_notebook_tiledb(model, path_fixed)
+                final_name, validation_message = self._save_notebook_tiledb(
+                    model, path_fixed
+                )
                 if final_name is not None:
                     parts = path.split("/")
                     parts_length = len(parts)
@@ -1017,7 +1035,8 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 )
             except tiledb.TileDBError as e:
                 raise http_error(
-                    500, str(e),
+                    500,
+                    str(e),
                 )
         else:
             return super().delete_file(path)
@@ -1031,19 +1050,20 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 old_path_fixed = old_path_fixed[: -1 * len(NOTEBOOK_EXT)]
 
             tiledb_uri = self.tiledb_uri_from_path(old_path_fixed)
-            parts_new= new_path.split("/")
+            parts_new = new_path.split("/")
             parts_new_length = len(parts_new)
-            array_name_new =  parts_new[parts_new_length - 1]
+            array_name_new = parts_new[parts_new_length - 1]
 
             try:
-                tiledb.cloud.notebook.rename_notebook(uri=tiledb_uri, notebook_name=array_name_new)
-            except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-                raise http_error(
-                    500, "Error renaming {}: ".format(tiledb_uri, str(e))
+                tiledb.cloud.notebook.rename_notebook(
+                    uri=tiledb_uri, notebook_name=array_name_new
                 )
+            except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+                raise http_error(500, "Error renaming {}: ".format(tiledb_uri, str(e)))
             except tiledb.TileDBError as e:
                 raise http_error(
-                    500, str(e),
+                    500,
+                    str(e),
                 )
         else:
             return super().rename(old_path, new_path)
