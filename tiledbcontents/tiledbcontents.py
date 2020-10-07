@@ -5,6 +5,10 @@ import time
 import tiledb
 import tiledb.cloud
 import numpy
+import pytz
+
+utc = pytz.UTC
+
 from notebook.services.contents.checkpoints import Checkpoints
 from notebook.services.contents.filemanager import FileContentsManager
 
@@ -673,7 +677,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                     nbmodel["last_modified"] = notebook.last_accessed
 
                     # Update namespace directory based on last access notebook
-                    if model["last_modified"] < notebook.last_accessed:
+                    if model["last_modified"].replace(tzinfo=utc) < notebook.last_accessed.replace(tzinfo=utc):
                         model["last_modified"] = notebook.last_accessed
 
                     nbmodel["type"] = "notebook"
@@ -760,7 +764,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                         namespaces[notebook.namespace] = namespace_model
 
                     # Update directory based on last access notebook
-                    if model["last_modified"] < notebook.last_accessed:
+                    if model["last_modified"].replace(tzinfo=utc) < notebook.last_accessed.replace(tzinfo=utc):
                         model["last_modified"] = notebook.last_accessed
 
                     # Update namespace directory based on last access notebook
@@ -821,7 +825,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                         ret["owned"]["content"].append(model)
 
                         # Update category date
-                        if ret["owned"]["last_modified"] < notebook.last_accessed:
+                        if ret["owned"]["last_modified"].replace(tzinfo=utc) < notebook.last_accessed.replace(tzinfo=utc):
                             ret["owned"]["last_modified"] = notebook.last_accessed
 
             if shared_notebooks is not None:
@@ -840,7 +844,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                         ret["shared"]["content"].append(model)
 
                         # Update category date
-                        if ret["shared"]["last_modified"] < notebook.last_accessed:
+                        if ret["shared"]["last_modified"].replace(tzinfo=utc) < notebook.last_accessed.replace(tzinfo=utc):
                             ret["shared"]["last_modified"] = notebook.last_accessed
 
             if public_notebooks is not None:
@@ -859,7 +863,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                         ret["public"]["content"].append(model)
 
                         # Update category date
-                        if ret["public"]["last_modified"] < notebook.last_accessed:
+                        if ret["public"]["last_modified"].replace(tzinfo=utc) < notebook.last_accessed.replace(tzinfo=utc):
                             ret["public"]["last_modified"] = notebook.last_accessed
 
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
@@ -918,8 +922,8 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             cloud["format"] = "json"
             cloud["content"] = self.__build_cloud_notebook_lists()
 
-            for category in cloud["content"].values():
-                if category["last_modified"] > cloud["last_modified"]:
+            for category in cloud["content"]:
+                if category["last_modified"].replace(tzinfo=utc) > cloud["last_modified"].replace(tzinfo=utc):
                     cloud["last_modified"] = category["last_modified"]
 
             model = cloud
