@@ -677,7 +677,9 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                     nbmodel["last_modified"] = notebook.last_accessed
 
                     # Update namespace directory based on last access notebook
-                    if model["last_modified"].replace(tzinfo=utc) < notebook.last_accessed.replace(tzinfo=utc):
+                    if model["last_modified"].replace(
+                        tzinfo=utc
+                    ) < notebook.last_accessed.replace(tzinfo=utc):
                         model["last_modified"] = notebook.last_accessed
 
                     nbmodel["type"] = "notebook"
@@ -703,6 +705,10 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 ).arrays
             elif category == "public":
                 arrays = tiledb.cloud.client.list_public_arrays(
+                    tag=[TAG_JUPYTER_NOTEBOOK]
+                ).arrays
+            elif category == "owned":
+                arrays = tiledb.cloud.client.list_arrays(
                     tag=[TAG_JUPYTER_NOTEBOOK]
                 ).arrays
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
@@ -732,17 +738,6 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                     )
                     namespaces[profile.username] = namespace_model
 
-                    owned_notebooks = tiledb.cloud.client.list_arrays(namespace=profile.username,
-                        tag=[TAG_JUPYTER_NOTEBOOK], async_req=True
-                    )
-
-                    owned_notebooks = owned_notebooks.get().arrays
-                    for notebook in owned_notebooks:
-                        # Update cloud directory based on last access child notebook
-                        if namespace_model["last_modified"].replace(tzinfo=utc) < notebook.last_accessed.replace(
-                                tzinfo=utc):
-                            namespace_model["last_modified"] = notebook.last_accessed
-
                     for org in profile.organizations:
                         # Don't list public for owned
                         if org.organization_name == "public":
@@ -752,18 +747,6 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                         namespace_model["path"] = "cloud/{}/{}".format(
                             category, org.organization_name
                         )
-
-                        org_notebooks = tiledb.cloud.client.list_arrays(namespace=org.organization_name,
-                            tag=[TAG_JUPYTER_NOTEBOOK], async_req=True
-                        )
-
-                        org_notebooks = org_notebooks.get().arrays
-
-                        for notebook in org_notebooks:
-                            # Update cloud directory based on last access child notebook
-                            if namespace_model["last_modified"].replace(tzinfo=utc) < notebook.last_accessed.replace(
-                                    tzinfo=utc):
-                                namespace_model["last_modified"] = notebook.last_accessed
 
                         namespaces[org.organization_name] = namespace_model
 
@@ -789,7 +772,9 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                         namespaces[notebook.namespace] = namespace_model
 
                     # Update directory based on last access notebook
-                    if model["last_modified"].replace(tzinfo=utc) < notebook.last_accessed.replace(tzinfo=utc):
+                    if model["last_modified"].replace(
+                        tzinfo=utc
+                    ) < notebook.last_accessed.replace(tzinfo=utc):
                         model["last_modified"] = notebook.last_accessed
 
                     # Update namespace directory based on last access notebook
@@ -850,7 +835,9 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                         ret["owned"]["content"].append(model)
 
                         # Update category date
-                        if ret["owned"]["last_modified"].replace(tzinfo=utc) < notebook.last_accessed.replace(tzinfo=utc):
+                        if ret["owned"]["last_modified"].replace(
+                            tzinfo=utc
+                        ) < notebook.last_accessed.replace(tzinfo=utc):
                             ret["owned"]["last_modified"] = notebook.last_accessed
 
             if shared_notebooks is not None:
@@ -869,7 +856,9 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                         ret["shared"]["content"].append(model)
 
                         # Update category date
-                        if ret["shared"]["last_modified"].replace(tzinfo=utc) < notebook.last_accessed.replace(tzinfo=utc):
+                        if ret["shared"]["last_modified"].replace(
+                            tzinfo=utc
+                        ) < notebook.last_accessed.replace(tzinfo=utc):
                             ret["shared"]["last_modified"] = notebook.last_accessed
 
             if public_notebooks is not None:
@@ -888,7 +877,9 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                         ret["public"]["content"].append(model)
 
                         # Update category date
-                        if ret["public"]["last_modified"].replace(tzinfo=utc) < notebook.last_accessed.replace(tzinfo=utc):
+                        if ret["public"]["last_modified"].replace(
+                            tzinfo=utc
+                        ) < notebook.last_accessed.replace(tzinfo=utc):
                             ret["public"]["last_modified"] = notebook.last_accessed
 
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
@@ -948,7 +939,9 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             cloud["content"] = self.__build_cloud_notebook_lists()
 
             for category in cloud["content"]:
-                if category["last_modified"].replace(tzinfo=utc) > cloud["last_modified"].replace(tzinfo=utc):
+                if category["last_modified"].replace(tzinfo=utc) > cloud[
+                    "last_modified"
+                ].replace(tzinfo=utc):
                     cloud["last_modified"] = category["last_modified"]
 
             model = cloud
@@ -1002,7 +995,9 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
 
                 for cloud_content in cloud["content"]:
                     # Update cloud directory based on last access child directory
-                    if cloud["last_modified"].replace(tzinfo=utc) < cloud_content["last_modified"].replace(tzinfo=utc):
+                    if cloud["last_modified"].replace(tzinfo=utc) < cloud_content[
+                        "last_modified"
+                    ].replace(tzinfo=utc):
                         cloud["last_modified"] = cloud_content["last_modified"]
 
             return model
