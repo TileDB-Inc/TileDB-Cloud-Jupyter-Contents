@@ -1066,7 +1066,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                     str(e),
                 )
         else:
-            return super().rename(old_path, new_path)
+            return super().rename_file(old_path, new_path)
 
     # ContentsManager API part 2: methods that have usable default
     # implementations, but can be overridden in subclasses.
