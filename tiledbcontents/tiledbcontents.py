@@ -671,6 +671,11 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                         category, namespace, nbmodel["path"], NOTEBOOK_EXT
                     )
                     nbmodel["last_modified"] = notebook.last_accessed
+
+                    # Update namespace directory based on last access notebook
+                    if model["last_modified"] < notebook.last_accessed:
+                        model["last_modified"] = notebook.last_accessed
+
                     nbmodel["type"] = "notebook"
 
                     if "write" not in notebook.allowed_actions:
@@ -746,12 +751,26 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
 
             else:
                 for notebook in arrays:
-                    namespace_model = base_directory_model(notebook.namespace)
-                    namespace_model["writable"] = False
-                    namespace_model["path"] = "cloud/{}/{}".format(
-                        category, notebook.namespace
-                    )
-                    namespaces[notebook.namespace] = namespace_model
+                    if notebook.namespace not in namespaces:
+                        namespace_model = base_directory_model(notebook.namespace)
+                        namespace_model["writable"] = False
+                        namespace_model["path"] = "cloud/{}/{}".format(
+                            category, notebook.namespace
+                        )
+                        namespaces[notebook.namespace] = namespace_model
+
+                    # Update directory based on last access notebook
+                    if model["last_modified"] < notebook.last_accessed:
+                        model["last_modified"] = notebook.last_accessed
+
+                    # Update namespace directory based on last access notebook
+                    if (
+                        namespaces[notebook.namespace]["last_modified"]
+                        < notebook.last_accessed
+                    ):
+                        namespaces[notebook.namespace][
+                            "last_modified"
+                        ] = notebook.last_accessed
 
             model["content"] = list(namespaces.values())
 
@@ -801,6 +820,10 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                         )
                         ret["owned"]["content"].append(model)
 
+                        # Update category date
+                        if ret["owned"]["last_modified"] < notebook.last_accessed:
+                            ret["owned"]["last_modified"] = notebook.last_accessed
+
             if shared_notebooks is not None:
                 if len(shared_notebooks) > 0:
                     ret["shared"]["format"] = "json"
@@ -816,6 +839,10 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                         )
                         ret["shared"]["content"].append(model)
 
+                        # Update category date
+                        if ret["shared"]["last_modified"] < notebook.last_accessed:
+                            ret["shared"]["last_modified"] = notebook.last_accessed
+
             if public_notebooks is not None:
                 if len(public_notebooks) > 0:
                     ret["public"]["format"] = "json"
@@ -830,6 +857,11 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                             "public", model["path"], NOTEBOOK_EXT
                         )
                         ret["public"]["content"].append(model)
+
+                        # Update category date
+                        if ret["public"]["last_modified"] < notebook.last_accessed:
+                            ret["public"]["last_modified"] = notebook.last_accessed
+
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
             raise http_error(
                 500, "Error building cloud notebook info: {}".format(str(e))
@@ -885,7 +917,11 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             cloud = base_directory_model("cloud")
             cloud["format"] = "json"
             cloud["content"] = self.__build_cloud_notebook_lists()
-            # model["content"] = [cloud]
+
+            for category in cloud["content"].values():
+                if category["last_modified"] > cloud["last_modified"]:
+                    cloud["last_modified"] = category["last_modified"]
+
             model = cloud
         else:
             category = self.__category_from_path(path)
