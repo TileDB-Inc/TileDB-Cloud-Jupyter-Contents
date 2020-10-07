@@ -732,6 +732,17 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                     )
                     namespaces[profile.username] = namespace_model
 
+                    owned_notebooks = tiledb.cloud.client.list_arrays(namespace=profile.username,
+                        tag=[TAG_JUPYTER_NOTEBOOK], async_req=True
+                    )
+
+                    owned_notebooks = owned_notebooks.get().arrays
+                    for notebook in owned_notebooks:
+                        # Update cloud directory based on last access child notebook
+                        if namespace_model["last_modified"].replace(tzinfo=utc) < notebook.last_accessed.replace(
+                                tzinfo=utc):
+                            namespace_model["last_modified"] = notebook.last_accessed
+
                     for org in profile.organizations:
                         # Don't list public for owned
                         if org.organization_name == "public":
@@ -741,7 +752,21 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                         namespace_model["path"] = "cloud/{}/{}".format(
                             category, org.organization_name
                         )
+
+                        org_notebooks = tiledb.cloud.client.list_arrays(namespace=org.organization_name,
+                            tag=[TAG_JUPYTER_NOTEBOOK], async_req=True
+                        )
+
+                        org_notebooks = org_notebooks.get().arrays
+
+                        for notebook in org_notebooks:
+                            # Update cloud directory based on last access child notebook
+                            if namespace_model["last_modified"].replace(tzinfo=utc) < notebook.last_accessed.replace(
+                                    tzinfo=utc):
+                                namespace_model["last_modified"] = notebook.last_accessed
+
                         namespaces[org.organization_name] = namespace_model
+
                 except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
                     raise http_error(
                         500,
@@ -974,6 +999,11 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 cloud = base_directory_model("cloud")
                 cloud["content"] = self.__build_cloud_notebook_lists()
                 model["content"].append(cloud)
+
+                for cloud_content in cloud["content"]:
+                    # Update cloud directory based on last access child directory
+                    if cloud["last_modified"].replace(tzinfo=utc) < cloud_content["last_modified"].replace(tzinfo=utc):
+                        cloud["last_modified"] = cloud_content["last_modified"]
 
             return model
 
