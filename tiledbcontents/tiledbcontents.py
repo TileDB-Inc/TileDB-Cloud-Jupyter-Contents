@@ -28,6 +28,64 @@ NOTEBOOK_EXT = ".ipynb"
 TAG_JUPYTER_NOTEBOOK = "__jupyter-notebook"
 
 
+class ArrayListing:
+    """
+    Use these to control caching
+    """
+
+    def __init__(self, category, namespace=None, cache_secs=4):
+        """
+        Create an ArrayListing which will cache results for specified time
+        :param category: category to list
+        :param namespace: namespace to filter to
+        :param cache_secs: cache time, defaults to 4 seconds
+        """
+        self.category = category
+        self.namespace = namespace
+        self.array_listing_future = None
+        self.last_fetched = None
+        self.cache_secs = cache_secs
+
+    def __should_fetch(self):
+        return (
+            self.last_fetched is None
+            or self.last_fetched + datetime.timedelta(0, self.cache_secs)
+            < datetime.datetime.now(tz=pytz.UTC)
+            or self.array_listing_future is None
+        )
+
+    def fetch(self):
+        if self.__should_fetch():
+            if self.category == "owned":
+                self.array_listing_future = tiledb.cloud.client.list_arrays(
+                    tag=[TAG_JUPYTER_NOTEBOOK], namespace=self.namespace, async_req=True
+                )
+            elif self.category == "shared":
+                self.array_listing_future = tiledb.cloud.client.list_shared_arrays(
+                    tag=[TAG_JUPYTER_NOTEBOOK], namespace=self.namespace, async_req=True
+                )
+            elif self.category == "public":
+                self.array_listing_future = tiledb.cloud.client.list_public_arrays(
+                    tag=[TAG_JUPYTER_NOTEBOOK], namespace=self.namespace, async_req=True
+                )
+            self.last_fetched = datetime.datetime.now(tz=pytz.UTC)
+
+        return self
+
+    def get(self):
+        if self.array_listing_future is None:
+            self.fetch()
+
+        return self.array_listing_future.get()
+
+    def arrays(self):
+        return self.get().arrays
+
+
+# global mapping of array listings used for caching
+array_listing = {}
+
+
 def get_cloud_enabled():
     """
     Check if a user is allowed to access notebook sharing
@@ -636,19 +694,12 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         """
         arrays = []
         try:
-            # fetch arrays from the category
-            if category == "owned":
-                arrays = tiledb.cloud.client.list_arrays(
-                    tag=[TAG_JUPYTER_NOTEBOOK], namespace=namespace
-                ).arrays
-            elif category == "shared":
-                arrays = tiledb.cloud.client.list_shared_arrays(
-                    tag=[TAG_JUPYTER_NOTEBOOK], namespace=namespace
-                ).arrays
-            elif category == "public":
-                arrays = tiledb.cloud.client.list_public_arrays(
-                    tag=[TAG_JUPYTER_NOTEBOOK], namespace=namespace
-                ).arrays
+            listing_key = "{}/{}".format(category, namespace)
+            if listing_key not in array_listing:
+                array_listing[listing_key] = ArrayListing(
+                    category=category, namespace=namespace
+                )
+            arrays = array_listing[listing_key].fetch().arrays()
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
             raise http_error(
                 500, "Error listing notebooks in {}: ".format(namespace, str(e))
@@ -703,18 +754,10 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         """
         arrays = []
         try:
-            if category == "shared":
-                arrays = tiledb.cloud.client.list_shared_arrays(
-                    tag=[TAG_JUPYTER_NOTEBOOK]
-                ).arrays
-            elif category == "public":
-                arrays = tiledb.cloud.client.list_public_arrays(
-                    tag=[TAG_JUPYTER_NOTEBOOK]
-                ).arrays
-            elif category == "owned":
-                arrays = tiledb.cloud.client.list_arrays(
-                    tag=[TAG_JUPYTER_NOTEBOOK]
-                ).arrays
+            if category not in array_listing:
+                array_listing[category] = ArrayListing(category=category)
+
+            arrays = array_listing[category].arrays()
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
             raise http_error(
                 500, "Error listing notebooks in {}: {}".format(category, str(e))
@@ -803,27 +846,30 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
 
         ret = {
             "owned": base_directory_model("owned"),
-            "public": base_directory_model("public"),
             "shared": base_directory_model("shared"),
+            "public": base_directory_model("public"),
         }
         try:
-            owned_notebooks = tiledb.cloud.client.list_arrays(
-                tag=[TAG_JUPYTER_NOTEBOOK], async_req=True
-            )
-            shared_notebooks = tiledb.cloud.client.list_shared_arrays(
-                tag=[TAG_JUPYTER_NOTEBOOK], async_req=True
-            )
-            public_notebooks = tiledb.cloud.client.list_public_arrays(
-                tag=[TAG_JUPYTER_NOTEBOOK], async_req=True
-            )
+
+            if "owned" not in array_listing:
+                array_listing["owned"] = ArrayListing(category="owned")
+            array_listing["owned"].fetch()
+
+            if "public" not in array_listing:
+                array_listing["public"] = ArrayListing(category="public")
+            array_listing["public"].fetch()
+
+            if "shared" not in array_listing:
+                array_listing["shared"] = ArrayListing(category="shared")
+            array_listing["shared"].fetch()
 
             ret["owned"]["path"] = "cloud/owned"
             ret["public"]["path"] = "cloud/public"
             ret["shared"]["path"] = "cloud/shared"
 
-            owned_notebooks = owned_notebooks.get().arrays
-            shared_notebooks = shared_notebooks.get().arrays
-            public_notebooks = public_notebooks.get().arrays
+            owned_notebooks = array_listing["owned"].arrays()
+            shared_notebooks = array_listing["shared"].arrays()
+            public_notebooks = array_listing["public"].arrays()
             if owned_notebooks is not None:
                 if len(owned_notebooks) > 0:
                     ret["owned"]["format"] = "json"
