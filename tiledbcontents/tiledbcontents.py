@@ -28,9 +28,77 @@ NOTEBOOK_EXT = ".ipynb"
 TAG_JUPYTER_NOTEBOOK = "__jupyter-notebook"
 
 
+class Array:
+    """
+    Use this to control caching
+    """
+
+    def __init__(self, uri):
+        """
+        Create an Array wrapping a TileDB Array class
+        :param uri:
+        """
+        self.uri = uri
+        try:
+            self.array = tiledb.open(uri, ctx=tiledb.cloud.Ctx())
+        except Exception as e:
+            raise http_error(
+                400,
+                "Error in Array init: {}".format(str(e)),
+            )
+        self.contents_fetched = False
+        self.cached_meta = {}
+        self.cache_metadata()
+
+    def read(self):
+        """
+        Fetch all contents of the array based on file_size metadata field
+        :return: raw bytes of content
+        """
+
+        try:
+            if self.contents_fetched:
+                self.reopen()
+
+            self.contents_fetched = True
+            meta = self.array.meta
+            if "file_size" in meta:
+                return self.array[slice(0, meta["file_size"])]
+        except Exception as e:
+            raise http_error(
+                400,
+                "Error in Array::read: {}".format(str(e)),
+            )
+
+        return None
+
+    def reopen(self):
+        """
+        Reopen an array at the current timestamp
+        :return:
+        """
+        try:
+            self.array.reopen()
+        except Exception as e:
+            raise http_error(
+                400,
+                "Error in Array::reopen: {}".format(str(e)),
+            )
+
+    def cache_metadata(self):
+        try:
+            for k, v in self.array.meta.items():
+                self.cached_meta[k] = v
+        except Exception as e:
+            raise http_error(
+                400,
+                "Error in Array::cache_metadata: {}".format(str(e)),
+            )
+
+
 class ArrayListing:
     """
-    Use these to control caching
+    Use this to control caching
     """
 
     def __init__(self, category, namespace=None, cache_secs=4):
@@ -84,6 +152,9 @@ class ArrayListing:
 
 # global mapping of array listings used for caching
 array_listing = {}
+
+# global mapping of arrays used for caching type and schema
+arrays = {}
 
 
 def get_cloud_enabled():
@@ -418,25 +489,34 @@ class TileDBContents(ContentsManager):
                 model["last_modified"] = info.last_accessed.replace(tzinfo=utc)
                 if "write" not in info.allowed_actions:
                     model["writable"] = False
-                with tiledb.open(tiledb_uri, ctx=tiledb.cloud.Ctx()) as A:
-                    meta = A.meta
-                    nb_content = []
-                    if "file_size" in meta:
-                        file_content = A[slice(0, meta["file_size"])]
-                        nb_content = reads(
-                            file_content["contents"].tostring().decode("utf-8"),
-                            as_version=NBFORMAT_VERSION,
-                        )
-                        self.mark_trusted_cells(nb_content, uri)
-                    model["format"] = "json"
-                    model["content"] = nb_content
-                    self.validate_notebook_model(model)
+
+                if tiledb_uri not in arrays:
+                    arrays[tiledb_uri] = Array(tiledb_uri)
+
+                arr = arrays[tiledb_uri]
+
+                nb_content = []
+                file_content = arr.read()
+                if file_content is not None:
+                    nb_content = reads(
+                        file_content["contents"].tostring().decode("utf-8"),
+                        as_version=NBFORMAT_VERSION,
+                    )
+                    self.mark_trusted_cells(nb_content, uri)
+                model["format"] = "json"
+                model["content"] = nb_content
+                self.validate_notebook_model(model)
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
                 raise http_error(400, "Error fetching notebook info: {}".format(str(e)))
             except tiledb.TileDBError as e:
                 raise http_error(
-                    500,
-                    str(e),
+                    400,
+                    "Error fetching notebook: {}".format(str(e)),
+                )
+            except Exception as e:
+                raise http_error(
+                    400,
+                    "Error fetching notebook: {}".format(str(e)),
                 )
 
         return model
@@ -455,46 +535,56 @@ class TileDBContents(ContentsManager):
                 model["last_modified"] = info.last_accessed.replace(tzinfo=utc)
                 if "write" not in info.allowed_actions:
                     model["writable"] = False
-                with tiledb.open(tiledb_uri, ctx=tiledb.cloud.Ctx()) as A:
-                    meta = A.meta
-                    # Get metadata information
-                    if "mimetype" in meta:
-                        model["mimetype"] = meta["mimetype"]
-                    if "format" in meta:
-                        model["format"] = meta["format"]
-                    else:
-                        model["format"] = format
 
-                    if "type" in meta:
-                        model["type"] = meta["type"]
+                if tiledb_uri not in arrays:
+                    arrays[tiledb_uri] = Array(tiledb_uri)
 
-                    file_content = None
-                    if "file_size" in meta:
-                        file_content = A[slice(0, meta["file_size"])]
-                        nb_content = file_content["contents"]
-                        model["content"] = nb_content
-                    else:
-                        model["content"] = []
+                arr = arrays[tiledb_uri]
 
-                    if (
-                        "type" in meta
-                        and meta["type"] == "notebook"
-                        and file_content is not None
-                    ):
-                        nb_content = reads(
-                            file_content["contents"].tostring().decode("utf-8"),
-                            as_version=NBFORMAT_VERSION,
-                        )
-                        self.mark_trusted_cells(nb_content, uri)
-                        model["format"] = "json"
-                        model["content"] = nb_content
-                        self.validate_notebook_model(model)
+                # Use cached meta, only file_size is ever updated
+                meta = arr.cached_meta
+                # Get metadata information
+                if "mimetype" in meta:
+                    model["mimetype"] = meta["mimetype"]
+                if "format" in meta:
+                    model["format"] = meta["format"]
+                else:
+                    model["format"] = format
+
+                if "type" in meta:
+                    model["type"] = meta["type"]
+
+                file_content = arr.read()
+                if file_content is not None:
+                    nb_content = file_content["contents"]
+                    model["content"] = nb_content
+                else:
+                    model["content"] = []
+
+                if (
+                    "type" in meta
+                    and meta["type"] == "notebook"
+                    and file_content is not None
+                ):
+                    nb_content = reads(
+                        file_content["contents"].tostring().decode("utf-8"),
+                        as_version=NBFORMAT_VERSION,
+                    )
+                    self.mark_trusted_cells(nb_content, uri)
+                    model["format"] = "json"
+                    model["content"] = nb_content
+                    self.validate_notebook_model(model)
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
                 raise http_error(500, "Error fetching file info: {}".format(str(e)))
             except tiledb.TileDBError as e:
                 raise http_error(
                     500,
-                    str(e),
+                    "Error fetching file: {}".format(str(e)),
+                )
+            except Exception as e:
+                raise http_error(
+                    400,
+                    "Error fetching file: {}".format(str(e)),
                 )
 
         return model
@@ -572,16 +662,24 @@ class TileDBContents(ContentsManager):
         :return:
         """
         try:
-            with tiledb.open(uri, ctx=tiledb.cloud.Ctx()) as A:
-                meta = A.meta
-                if "mimetype" in meta:
-                    return meta["mimetype"]
+            if uri not in arrays:
+                arrays[uri] = Array(uri)
+
+            arr = arrays[uri]
+            meta = arr.cached_meta
+            if "mimetype" in meta:
+                return meta["mimetype"]
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
             raise http_error(500, "Error getting mimetype: {}".format(str(e)))
         except tiledb.TileDBError as e:
             raise http_error(
                 500,
                 str(e),
+            )
+        except Exception as e:
+            raise http_error(
+                400,
+                "Error getting file MIME: {}".format(str(e)),
             )
 
         return None
@@ -593,16 +691,24 @@ class TileDBContents(ContentsManager):
         :return:
         """
         try:
-            with tiledb.open(uri, ctx=tiledb.cloud.Ctx()) as A:
-                meta = A.meta
-                if "type" in meta:
-                    return meta["type"]
+            if uri not in arrays:
+                arrays[uri] = Array(uri)
+
+            arr = arrays[uri]
+            meta = arr.cached_meta
+            if "type" in meta:
+                return meta["type"]
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
             raise http_error(500, "Error getting type: {}".format(str(e)))
         except tiledb.TileDBError as e:
             raise http_error(
                 500,
                 str(e),
+            )
+        except Exception as e:
+            raise http_error(
+                400,
+                "Error getting file type: {}".format(str(e)),
             )
 
         return None
@@ -702,12 +808,17 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             arrays = array_listing[listing_key].fetch().arrays()
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
             raise http_error(
-                500, "Error listing notebooks in {}: ".format(namespace, str(e))
+                500, "Error listing notebooks in {}: {}".format(namespace, str(e))
             )
         except tiledb.TileDBError as e:
             raise http_error(
                 500,
                 str(e),
+            )
+        except Exception as e:
+            raise http_error(
+                400,
+                "Error listing notebooks in  {}: {}".format(namespace, str(e)),
             )
 
         model = base_directory_model(namespace)
@@ -767,6 +878,11 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 500,
                 str(e),
             )
+        except Exception as e:
+            raise http_error(
+                400,
+                "Error listing notebooks in  {}: {}".format(category, str(e)),
+            )
 
         model = base_directory_model(category)
         model["path"] = "cloud/{}".format(category)
@@ -806,6 +922,11 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                     raise http_error(
                         500,
                         str(e),
+                    )
+                except Exception as e:
+                    raise http_error(
+                        400,
+                        "Error listing notebooks in  {}: {}".format(category, str(e)),
                     )
 
             else:
@@ -954,6 +1075,10 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 500,
                 str(e),
             )
+        except Exception as e:
+            raise http_error(
+                500, "Error building cloud notebook info: {}".format(str(e))
+            )
 
         return list(ret.values())
 
@@ -1049,39 +1174,42 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         if path_fixed == "" or path_fixed is None:
             path_fixed = "."
 
-        if not self._is_remote_path(path_fixed):
-            model = super().get(path, content, type, format)
-            if path_fixed == "." and content and get_cloud_enabled():
-                cloud = base_directory_model("cloud")
-                cloud["content"] = self.__build_cloud_notebook_lists()
-                model["content"].append(cloud)
+        try:
+            if not self._is_remote_path(path_fixed):
+                model = super().get(path, content, type, format)
+                if path_fixed == "." and content and get_cloud_enabled():
+                    cloud = base_directory_model("cloud")
+                    cloud["content"] = self.__build_cloud_notebook_lists()
+                    model["content"].append(cloud)
 
-                for cloud_content in cloud["content"]:
-                    # Update cloud directory based on last access child directory
-                    if cloud["last_modified"].replace(tzinfo=utc) < cloud_content[
-                        "last_modified"
-                    ].replace(tzinfo=utc):
-                        cloud["last_modified"] = cloud_content["last_modified"]
+                    for cloud_content in cloud["content"]:
+                        # Update cloud directory based on last access child directory
+                        if cloud["last_modified"].replace(tzinfo=utc) < cloud_content[
+                            "last_modified"
+                        ].replace(tzinfo=utc):
+                            cloud["last_modified"] = cloud_content["last_modified"]
 
-            return model
+                return model
 
-        if path_fixed.endswith(NOTEBOOK_EXT):
-            path_fixed = path_fixed[: -1 * len(NOTEBOOK_EXT)]
+            if path_fixed.endswith(NOTEBOOK_EXT):
+                path_fixed = path_fixed[: -1 * len(NOTEBOOK_EXT)]
 
-        if type is None:
-            if self._is_remote_dir(path_fixed):
-                type = "directory"
-            else:
-                type = self.guess_type(path, allow_directory=True)
+            if type is None:
+                if self._is_remote_dir(path_fixed):
+                    type = "directory"
+                else:
+                    type = self.guess_type(path, allow_directory=True)
 
-        if type == "notebook":
-            return self._notebook_from_array(path_fixed, content)
-        elif type == "file":
-            return self._file_from_array(path_fixed, content, format)
-        elif type == "directory":
-            return self.__directory_model_from_path(path_fixed, content)
-            # if model is not None:
-            #     model.
+            if type == "notebook":
+                return self._notebook_from_array(path_fixed, content)
+            elif type == "file":
+                return self._file_from_array(path_fixed, content, format)
+            elif type == "directory":
+                return self.__directory_model_from_path(path_fixed, content)
+                # if model is not None:
+                #     model.
+        except Exception as e:
+            raise http_error(500, "Error getting {}: {}".format(path_fixed, str(e)))
 
     def save(self, model, path=""):
         """
