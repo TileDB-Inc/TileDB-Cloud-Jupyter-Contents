@@ -27,6 +27,9 @@ NOTEBOOK_EXT = ".ipynb"
 
 TAG_JUPYTER_NOTEBOOK = "__jupyter-notebook"
 
+TAG_IMAGE_NAME_ENV = "TAG_IMAGE_NAME"
+TAG_IMAGE_SIZE_ENV = "TAG_IMAGE_SIZE"
+
 
 class Array:
     """
@@ -376,8 +379,22 @@ class TileDBContents(ContentsManager):
 
             tiledb_uri = "tiledb://{}/{}".format(namespace, array_name)
             time.sleep(0.25)
+            tags = [TAG_JUPYTER_NOTEBOOK]
+
+            # Get image name from env if exists
+            # This is stored as a tag for TileDB Cloud for searching, filtering and launching
+            image_name = os.getenv(TAG_IMAGE_NAME_ENV)
+            if image_name is not None:
+                tags.append(image_name)
+
+            # Get image size from env if exists
+            # This is stored as a tag for TileDB Cloud for searching, filtering and launching
+            image_size = os.getenv(TAG_IMAGE_SIZE_ENV)
+            if image_size is not None:
+                tags.append(image_size)
+
             tiledb.cloud.array.update_info(
-                uri=tiledb_uri, array_name=array_name, tags=[TAG_JUPYTER_NOTEBOOK]
+                uri=tiledb_uri, array_name=array_name, tags=tags
             )
 
             return tiledb_uri, array_name
