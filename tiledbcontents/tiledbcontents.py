@@ -25,10 +25,8 @@ NOTEBOOK_MIME = "application/x-ipynb+json"
 
 NOTEBOOK_EXT = ".ipynb"
 
-TAG_JUPYTER_NOTEBOOK = "__jupyter-notebook"
-
-TAG_IMAGE_NAME_ENV = "TAG_IMAGE_NAME"
-TAG_IMAGE_SIZE_ENV = "TAG_IMAGE_SIZE"
+JUPYTER_IMAGE_NAME_ENV = "JUPYTER_IMAGE_NAME"
+JUPYTER_IMAGE_SIZE_ENV = "JUPYTER_IMAGE_SIZE"
 
 
 class Array:
@@ -129,15 +127,21 @@ class ArrayListing:
         if self.__should_fetch():
             if self.category == "owned":
                 self.array_listing_future = tiledb.cloud.client.list_arrays(
-                    tag=[TAG_JUPYTER_NOTEBOOK], namespace=self.namespace, async_req=True
+                    file_type=[tiledb.cloud.rest_api.models.FileType.NOTEBOOK],
+                    namespace=self.namespace,
+                    async_req=True,
                 )
             elif self.category == "shared":
                 self.array_listing_future = tiledb.cloud.client.list_shared_arrays(
-                    tag=[TAG_JUPYTER_NOTEBOOK], namespace=self.namespace, async_req=True
+                    file_type=[tiledb.cloud.rest_api.models.FileType.NOTEBOOK],
+                    namespace=self.namespace,
+                    async_req=True,
                 )
             elif self.category == "public":
                 self.array_listing_future = tiledb.cloud.client.list_public_arrays(
-                    tag=[TAG_JUPYTER_NOTEBOOK], namespace=self.namespace, async_req=True
+                    file_type=[tiledb.cloud.rest_api.models.FileType.NOTEBOOK],
+                    namespace=self.namespace,
+                    async_req=True,
                 )
             self.last_fetched = datetime.datetime.now(tz=pytz.UTC)
 
@@ -379,22 +383,33 @@ class TileDBContents(ContentsManager):
 
             tiledb_uri = "tiledb://{}/{}".format(namespace, array_name)
             time.sleep(0.25)
-            tags = [TAG_JUPYTER_NOTEBOOK]
 
+            file_properties = {}
             # Get image name from env if exists
             # This is stored as a tag for TileDB Cloud for searching, filtering and launching
-            image_name = os.getenv(TAG_IMAGE_NAME_ENV)
+            image_name = os.getenv(JUPYTER_IMAGE_NAME_ENV)
             if image_name is not None:
-                tags.append(image_name)
+                file_properties[
+                    tiledb.cloud.rest_api.models.FilePropertyName.IMAGE
+                ] = image_name
 
             # Get image size from env if exists
             # This is stored as a tag for TileDB Cloud for searching, filtering and launching
-            image_size = os.getenv(TAG_IMAGE_SIZE_ENV)
+            image_size = os.getenv(JUPYTER_IMAGE_SIZE_ENV)
             if image_size is not None:
-                tags.append(image_size)
+                file_properties[
+                    tiledb.cloud.rest_api.models.FilePropertyName.SIZE
+                ] = image_size
 
-            tiledb.cloud.array.update_info(
-                uri=tiledb_uri, array_name=array_name, tags=tags
+            tiledb.cloud.array.update_info(uri=tiledb_uri, array_name=array_name)
+
+            if len(file_properties) == 0:
+                file_properties = None
+
+            tiledb.cloud.array.update_file_properties(
+                uri=tiledb_uri,
+                file_type=tiledb.cloud.rest_api.models.FileType.NOTEBOOK,
+                file_properties=file_properties,
             )
 
             return tiledb_uri, array_name
