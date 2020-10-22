@@ -200,14 +200,18 @@ def get_s3_prefix(namespace):
                 profile.notebook_settings is not None
                 and profile.notebook_settings.default_s3_path is not None
             ):
-                return profile.notebook_settings.default_s3_path
+                return os.path.join(
+                    profile.notebook_settings.default_s3_path, "notebooks"
+                )
         else:
             organization = tiledb.cloud.client.organization(namespace)
             if (
                 organization.notebook_settings is not None
                 and organization.notebook_settings.default_s3_path is not None
             ):
-                return organization.notebook_settings.default_s3_path
+                return os.path.join(
+                    organization.notebook_settings.default_s3_path, "notebooks"
+                )
     except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
         raise http_error(
             400,
@@ -351,7 +355,7 @@ class TileDBContents(ContentsManager):
 
             schema = tiledb.ArraySchema(
                 domain=dom,
-                sparse=True,
+                sparse=False,
                 attrs=[
                     tiledb.Attr(
                         name="contents",
@@ -376,10 +380,12 @@ class TileDBContents(ContentsManager):
                     ),
                 )
 
-            tiledb_uri_s3 = "tiledb://{}/{}".format(namespace, s3_prefix + array_name)
+            tiledb_uri_s3 = "tiledb://{}/{}".format(
+                namespace, os.path.join(s3_prefix, array_name)
+            )
 
             # Create the (empty) array on disk.
-            tiledb.SparseArray.create(tiledb_uri_s3, schema)
+            tiledb.DenseArray.create(tiledb_uri_s3, schema)
 
             tiledb_uri = "tiledb://{}/{}".format(namespace, array_name)
             time.sleep(0.25)
