@@ -197,20 +197,19 @@ def get_s3_prefix(namespace):
 
         if namespace == profile.username:
             if (
-                profile.notebook_settings is not None
-                and profile.notebook_settings.default_s3_path is not None
+                profile.default_s3_path is not None
             ):
                 return os.path.join(
-                    profile.notebook_settings.default_s3_path, "notebooks"
+                    profile.default_s3_path, "notebooks"
                 )
         else:
             organization = tiledb.cloud.client.organization(namespace)
             if (
-                organization.notebook_settings is not None
-                and organization.notebook_settings.default_s3_path is not None
+                organization.default_s3_path is not None
+                and organization.default_s3_path is not None
             ):
                 return os.path.join(
-                    organization.notebook_settings.default_s3_path, "notebooks"
+                    organization.default_s3_path, "notebooks"
                 )
     except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
         raise http_error(
