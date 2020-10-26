@@ -17,6 +17,7 @@ NAME = "tiledbcontents"
 
 REQUIRES = [
     "notebook",
+    "nose",
     "ipykernel",
     "setuptools>=18.0",
     "setuptools-scm>=1.5.4",
