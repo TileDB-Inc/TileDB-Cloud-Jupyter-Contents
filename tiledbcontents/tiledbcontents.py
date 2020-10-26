@@ -81,7 +81,7 @@ class Array:
         :return:
         """
         try:
-            self.array.reopen()
+            self.array = tiledb.open(self.uri, ctx=TILEDB_CONTEXT)
         except Exception as e:
             raise http_error(
                 400,
@@ -350,7 +350,7 @@ class TileDBContents(ContentsManager):
 
             schema = tiledb.ArraySchema(
                 domain=dom,
-                sparse=False,
+                sparse=True,
                 attrs=[
                     tiledb.Attr(
                         name="contents",
@@ -380,7 +380,7 @@ class TileDBContents(ContentsManager):
             )
 
             # Create the (empty) array on disk.
-            tiledb.DenseArray.create(tiledb_uri_s3, schema)
+            tiledb.SparseArray.create(tiledb_uri_s3, schema)
 
             tiledb_uri = "tiledb://{}/{}".format(namespace, array_name)
             time.sleep(0.25)
