@@ -28,6 +28,8 @@ NOTEBOOK_EXT = ".ipynb"
 JUPYTER_IMAGE_NAME_ENV = "JUPYTER_IMAGE_NAME"
 JUPYTER_IMAGE_SIZE_ENV = "JUPYTER_IMAGE_SIZE"
 
+TILEDB_CONTEXT = tiledb.cloud.Ctx()
+
 
 class Array:
     """
@@ -41,7 +43,7 @@ class Array:
         """
         self.uri = uri
         try:
-            self.array = tiledb.open(uri, ctx=tiledb.cloud.Ctx())
+            self.array = tiledb.open(uri, ctx=TILEDB_CONTEXT)
         except Exception as e:
             raise http_error(
                 400,
@@ -79,7 +81,7 @@ class Array:
         :return:
         """
         try:
-            self.array.reopen()
+            self.array = tiledb.open(self.uri, ctx=TILEDB_CONTEXT)
         except Exception as e:
             raise http_error(
                 400,
@@ -196,21 +198,15 @@ def get_s3_prefix(namespace):
         profile = tiledb.cloud.client.user_profile()
 
         if namespace == profile.username:
-            if (
-                profile.default_s3_path is not None
-            ):
-                return os.path.join(
-                    profile.default_s3_path, "notebooks"
-                )
+            if profile.default_s3_path is not None:
+                return os.path.join(profile.default_s3_path, "notebooks")
         else:
             organization = tiledb.cloud.client.organization(namespace)
             if (
                 organization.default_s3_path is not None
                 and organization.default_s3_path is not None
             ):
-                return os.path.join(
-                    organization.default_s3_path, "notebooks"
-                )
+                return os.path.join(organization.default_s3_path, "notebooks")
     except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
         raise http_error(
             400,
@@ -347,14 +343,14 @@ class TileDBContents(ContentsManager):
                     domain=(0, numpy.iinfo(numpy.uint64).max - 1025),
                     tile=1024,
                     dtype=numpy.uint64,
-                    ctx=tiledb.cloud.Ctx(),
+                    ctx=TILEDB_CONTEXT,
                 ),
-                ctx=tiledb.cloud.Ctx(),
+                ctx=TILEDB_CONTEXT,
             )
 
             schema = tiledb.ArraySchema(
                 domain=dom,
-                sparse=False,
+                sparse=True,
                 attrs=[
                     tiledb.Attr(
                         name="contents",
@@ -362,7 +358,7 @@ class TileDBContents(ContentsManager):
                         filters=tiledb.FilterList([tiledb.ZstdFilter()]),
                     )
                 ],
-                ctx=tiledb.cloud.Ctx(),
+                ctx=TILEDB_CONTEXT,
             )
 
             parts = uri.split("/")
@@ -384,7 +380,7 @@ class TileDBContents(ContentsManager):
             )
 
             # Create the (empty) array on disk.
-            tiledb.DenseArray.create(tiledb_uri_s3, schema)
+            tiledb.SparseArray.create(tiledb_uri_s3, schema)
 
             tiledb_uri = "tiledb://{}/{}".format(namespace, array_name)
             time.sleep(0.25)
@@ -474,7 +470,7 @@ class TileDBContents(ContentsManager):
             # if not self._array_exists(uri):
             tiledb_uri, final_array_name = self._create_array(tiledb_uri, 5)
 
-        with tiledb.open(tiledb_uri, mode="w", ctx=tiledb.cloud.Ctx()) as A:
+        with tiledb.open(tiledb_uri, mode="w", ctx=TILEDB_CONTEXT) as A:
             A[range(len(contents))] = {"contents": contents}
             A.meta["file_size"] = len(contents)
             if mimetype is not None:
