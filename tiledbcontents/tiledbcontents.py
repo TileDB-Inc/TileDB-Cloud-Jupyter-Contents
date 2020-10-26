@@ -6,6 +6,8 @@ import tiledb
 import tiledb.cloud
 import numpy
 import pytz
+import string
+import random
 
 utc = pytz.UTC
 
@@ -331,6 +333,9 @@ class TileDBContents(ContentsManager):
         )
         return name
 
+    def id_generator(self, size=6, chars=string.ascii_uppercase + string.digits):
+        return ''.join(random.choice(chars) for _ in range(size))
+
     def _create_array(self, uri, retry=0):
         """
         Create a new array for storing notebook file
@@ -368,7 +373,7 @@ class TileDBContents(ContentsManager):
             parts = uri.split("/")
             parts_len = len(parts)
             namespace = parts[parts_len - 2]
-            array_name = parts[parts_len - 1]
+            array_name = parts[parts_len - 1] + "_" + self.id_generator()
 
             s3_prefix = get_s3_prefix(namespace)
             if s3_prefix is None:
