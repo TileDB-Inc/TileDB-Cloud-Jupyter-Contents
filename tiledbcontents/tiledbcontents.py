@@ -245,7 +245,6 @@ def base_directory_model(path):
         type="directory",
         last_modified=DUMMY_CREATED_DATE,
         created=DUMMY_CREATED_DATE,
-        format="json",
     )
     return model
 
@@ -330,7 +329,7 @@ class TileDBContents(ContentsManager):
         return name
 
     def id_generator(self, size=6, chars=string.ascii_uppercase + string.digits):
-        return ''.join(random.choice(chars) for _ in range(size))
+        return "".join(random.choice(chars) for _ in range(size))
 
     def _create_array(self, uri, retry=0):
         """
@@ -934,6 +933,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 try:
                     profile = tiledb.cloud.client.user_profile()
                     namespace_model = base_directory_model(profile.username)
+                    namespace_model["format"] = "json"
                     namespace_model["path"] = "cloud/{}/{}".format(
                         category, profile.username
                     )
@@ -945,6 +945,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                             continue
 
                         namespace_model = base_directory_model(org.organization_name)
+                        namespace_model["format"] = "json"
                         namespace_model["path"] = "cloud/{}/{}".format(
                             category, org.organization_name
                         )
@@ -971,6 +972,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 for notebook in arrays:
                     if notebook.namespace not in namespaces:
                         namespace_model = base_directory_model(notebook.namespace)
+                        namespace_model["format"] = "json"
                         namespace_model["writable"] = False
                         namespace_model["path"] = "cloud/{}/{}".format(
                             category, notebook.namespace
@@ -1036,6 +1038,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                     for notebook in owned_notebooks:
                         model = base_model(notebook.name)
                         model["type"] = "notebook"
+                        model["format"] = "json"
                         model["last_modified"] = notebook.last_accessed.replace(
                             tzinfo=utc
                         )
@@ -1061,6 +1064,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                     for notebook in shared_notebooks:
                         model = base_model(notebook.name)
                         model["type"] = "notebook"
+                        model["format"] = "json"
                         model["last_modified"] = notebook.last_accessed.replace(
                             tzinfo=utc
                         )
@@ -1086,6 +1090,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                     for notebook in public_notebooks:
                         model = base_model(notebook.name)
                         model["type"] = "notebook"
+                        model["format"] = "json"
                         model["last_modified"] = notebook.last_accessed.replace(
                             tzinfo=utc
                         )
@@ -1161,14 +1166,15 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
 
         if path == "cloud":
             cloud = base_directory_model("cloud")
-            cloud["format"] = "json"
-            cloud["content"] = self.__build_cloud_notebook_lists()
+            if content:
+                cloud["format"] = "json"
+                cloud["content"] = self.__build_cloud_notebook_lists()
 
-            for category in cloud["content"]:
-                if category["last_modified"].replace(tzinfo=utc) > cloud[
-                    "last_modified"
-                ].replace(tzinfo=utc):
-                    cloud["last_modified"] = category["last_modified"]
+                for category in cloud["content"]:
+                    if category["last_modified"].replace(tzinfo=utc) > cloud[
+                        "last_modified"
+                    ].replace(tzinfo=utc):
+                        cloud["last_modified"] = category["last_modified"]
 
             model = cloud
         else:
@@ -1218,6 +1224,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 if path_fixed == "." and content and get_cloud_enabled():
                     cloud = base_directory_model("cloud")
                     cloud["content"] = self.__build_cloud_notebook_lists()
+                    cloud["format"] = "json"
                     model["content"].append(cloud)
 
                     for cloud_content in cloud["content"]:
