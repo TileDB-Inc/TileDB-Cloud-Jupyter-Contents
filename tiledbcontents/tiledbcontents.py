@@ -83,6 +83,9 @@ class Array:
         :return:
         """
         try:
+            if self.array is not None:
+                self.array.close()
+
             self.array = tiledb.open(self.uri, ctx=TILEDB_CONTEXT)
         except Exception as e:
             raise http_error(
