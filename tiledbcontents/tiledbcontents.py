@@ -357,7 +357,7 @@ class TileDBContents(ContentsManager):
 
             schema = tiledb.ArraySchema(
                 domain=dom,
-                sparse=True,
+                sparse=False,
                 attrs=[
                     tiledb.Attr(
                         name="contents",
@@ -387,7 +387,7 @@ class TileDBContents(ContentsManager):
             )
 
             # Create the (empty) array on disk.
-            tiledb.SparseArray.create(tiledb_uri_s3, schema)
+            tiledb.DenseArray.create(tiledb_uri_s3, schema)
 
             tiledb_uri = "tiledb://{}/{}".format(namespace, array_name)
             time.sleep(0.25)
