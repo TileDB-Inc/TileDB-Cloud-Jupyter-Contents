@@ -1,0 +1,41 @@
+name: Install Test
+
+on:
+  # Trigger the workflow on push or pull request,
+  # but only for the main branch
+  push:
+    branches:
+      - master
+    tags:
+    - v*
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  Build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-10.15, ubuntu-18.04]
+        python-version: [3.7, 3.8]
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup Python ${{ env.python.version }}
+      uses: actions/setup-python@v2
+      with:
+        python-version: ${{ env.python.version }}
+    # You can test your matrix by printing the current Python version
+    - name: Display Python version
+      run: python3 -c "import sys; print(sys.version)"
+    - name: Update pip
+      run: pip3 install --upgrade pip
+    - name: Update setuptools
+      run: pip3 install --upgrade setuptools
+    - name: Install dependencies
+      run: python3 -m pip install --upgrade pytest pylint
+    - name: Test Install
+      run: python3 -m pip install --upgrade --user .
+    - name: Build wheel
+      run: python3 setup.py bdist_wheel
