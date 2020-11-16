@@ -1287,7 +1287,11 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             path_fixed = path_fixed[: -1 * len(NOTEBOOK_EXT)]
 
         self._is_new = True
-        if "language_info" in model["content"]["metadata"]:
+        if (
+            "content" in model
+            and "metadata" in model["content"]
+            and "language_info" in model["content"]["metadata"]
+        ):
             self._is_new = False
 
         validation_message = None
