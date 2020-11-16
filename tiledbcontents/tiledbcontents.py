@@ -161,7 +161,10 @@ class ArrayListing:
         return self.array_listing_future.get()
 
     def arrays(self):
-        return self.get().arrays
+        ret = self.get()
+        if ret is not None:
+            return ret.arrays
+        return None
 
 
 # global mapping of array listings used for caching
@@ -971,7 +974,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                         "Error listing notebooks in  {}: {}".format(category, str(e)),
                     )
 
-            else:
+            elif arrays is not None:
                 for notebook in arrays:
                     if notebook.namespace not in namespaces:
                         namespace_model = base_directory_model(notebook.namespace)
