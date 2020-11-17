@@ -945,18 +945,21 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                     )
                     namespaces[profile.username] = namespace_model
 
-                    for org in profile.organizations:
-                        # Don't list public for owned
-                        if org.organization_name == "public":
-                            continue
+                    if profile.organizations is not None:
+                        for org in profile.organizations:
+                            # Don't list public for owned
+                            if org.organization_name == "public":
+                                continue
 
-                        namespace_model = base_directory_model(org.organization_name)
-                        namespace_model["format"] = "json"
-                        namespace_model["path"] = "cloud/{}/{}".format(
-                            category, org.organization_name
-                        )
+                            namespace_model = base_directory_model(
+                                org.organization_name
+                            )
+                            namespace_model["format"] = "json"
+                            namespace_model["path"] = "cloud/{}/{}".format(
+                                category, org.organization_name
+                            )
 
-                        namespaces[org.organization_name] = namespace_model
+                            namespaces[org.organization_name] = namespace_model
 
                 except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
                     raise http_error(
@@ -1176,11 +1179,12 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 cloud["format"] = "json"
                 cloud["content"] = self.__build_cloud_notebook_lists()
 
-                for category in cloud["content"]:
-                    if category["last_modified"].replace(tzinfo=utc) > cloud[
-                        "last_modified"
-                    ].replace(tzinfo=utc):
-                        cloud["last_modified"] = category["last_modified"]
+                if "content" in cloud and cloud["content"] is not None:
+                    for category in cloud["content"]:
+                        if category["last_modified"].replace(tzinfo=utc) > cloud[
+                            "last_modified"
+                        ].replace(tzinfo=utc):
+                            cloud["last_modified"] = category["last_modified"]
 
             model = cloud
         else:
@@ -1200,21 +1204,22 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         depending on the result of `guess_type`.
         """
         ret = []
-        for path in paths:
-            # path = remove_path_prefix("file://" + os.getcwd() + "/", path)
-            # path_after = remove_path_prefix(path_prefix, path)
-            # path = path_after
-            # if os.path.basename(path) == self.dir_keep_file:
-            #      continue
-            type_ = self.guess_type(path, allow_directory=True)
-            if type_ == "notebook":
-                ret.append(self._notebook_from_array(path, False))
-            elif type_ == "file":
-                ret.append(self._file_from_array(path, False, None))
-            elif type_ == "directory":
-                ret.append(self.__directory_model_from_path(path, False))
-            else:
-                HTTPError(500, "Unknown file type %s for file '%s'" % (type_, path))
+        if paths is not None:
+            for path in paths:
+                # path = remove_path_prefix("file://" + os.getcwd() + "/", path)
+                # path_after = remove_path_prefix(path_prefix, path)
+                # path = path_after
+                # if os.path.basename(path) == self.dir_keep_file:
+                #      continue
+                type_ = self.guess_type(path, allow_directory=True)
+                if type_ == "notebook":
+                    ret.append(self._notebook_from_array(path, False))
+                elif type_ == "file":
+                    ret.append(self._file_from_array(path, False, None))
+                elif type_ == "directory":
+                    ret.append(self.__directory_model_from_path(path, False))
+                else:
+                    HTTPError(500, "Unknown file type %s for file '%s'" % (type_, path))
         return ret
 
     def get(self, path, content=True, type=None, format=None):
@@ -1233,12 +1238,13 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                     cloud["format"] = "json"
                     model["content"].append(cloud)
 
-                    for cloud_content in cloud["content"]:
-                        # Update cloud directory based on last access child directory
-                        if cloud["last_modified"].replace(tzinfo=utc) < cloud_content[
-                            "last_modified"
-                        ].replace(tzinfo=utc):
-                            cloud["last_modified"] = cloud_content["last_modified"]
+                    if "content" in cloud and cloud["content"] is not None:
+                        for cloud_content in cloud["content"]:
+                            # Update cloud directory based on last access child directory
+                            if cloud["last_modified"].replace(
+                                tzinfo=utc
+                            ) < cloud_content["last_modified"].replace(tzinfo=utc):
+                                cloud["last_modified"] = cloud_content["last_modified"]
 
                 return model
 
