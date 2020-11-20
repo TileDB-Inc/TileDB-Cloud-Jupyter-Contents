@@ -125,9 +125,9 @@ class ArrayListing:
     def __should_fetch(self):
         return (
             self.last_fetched is None
+            or self.array_listing_future is None
             or self.last_fetched + datetime.timedelta(0, self.cache_secs)
             < datetime.datetime.now(tz=pytz.UTC)
-            or self.array_listing_future is None
         )
 
     def fetch(self):
@@ -893,7 +893,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
 
                     nbmodel["type"] = "notebook"
 
-                    if "write" not in notebook.allowed_actions:
+                    if notebook.allowed_actions is None or "write" not in notebook.allowed_actions:
                         model["writable"] = False
                     model["content"].append(nbmodel)
 
@@ -1221,7 +1221,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         """Get a file or directory model."""
         path_fixed = path.strip("/")
 
-        if path_fixed == "" or path_fixed is None:
+        if path_fixed is None or path_fixed == "":
             path_fixed = "."
 
         try:
@@ -1272,7 +1272,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         self.run_pre_save_hook(model=model, path=path)
         path_fixed = path.strip("/")
 
-        if path_fixed == "" or path_fixed is None:
+        if path_fixed is None or path_fixed == "":
             path_fixed = "."
 
         if "type" not in model:
@@ -1395,7 +1395,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         exists : bool
             Whether the path does indeed exist.
         """
-        if path == "" or path is None:
+        if path is None or path == "":
             path = "."
 
         path_fixed = path.strip("/")
@@ -1435,7 +1435,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         exists : bool
             Whether the file exists.
         """
-        # if path == "" or path is None:
+        # if path is None or path == "":
         #     path = "."
 
         path_fixed = path.strip("/")
