@@ -499,6 +499,9 @@ class TileDBContents(ContentsManager):
         :param uri: array URI to write
         :return:
         """
+        if model['type'] is not 'notebook':
+            raise HTTPError(403, 'Only noteboks are allowed to create in cloud folders')
+
         file_contents = model["content"]
         return self._write_bytes_to_array(
             uri, file_contents, model.get("mimetype"), model.get("format"), "file"
