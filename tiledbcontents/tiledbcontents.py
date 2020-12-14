@@ -481,7 +481,7 @@ class TileDBContents(ContentsManager):
             tiledb_uri, final_array_name = self._create_array(tiledb_uri, 5)
 
         with tiledb.open(tiledb_uri, mode="w", ctx=TILEDB_CONTEXT) as A:
-            A[range(len(contents))] = {"contents": contents}
+            A[0:len(contents)] = {"contents": contents}
             A.meta["file_size"] = len(contents)
             if mimetype is not None:
                 A.meta["mimetype"] = mimetype
@@ -500,7 +500,7 @@ class TileDBContents(ContentsManager):
         :return:
         """
         if model['type'] is not 'notebook':
-            raise HTTPError(403, 'Only noteboks are allowed to create in cloud folders')
+            raise HTTPError(403, 'Only notebooks are allowed to create in cloud folders')
 
         file_contents = model["content"]
         return self._write_bytes_to_array(
