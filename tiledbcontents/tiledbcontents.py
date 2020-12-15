@@ -38,7 +38,7 @@ class Array:
     Use this to control caching
     """
 
-    def __init__(self, uri):
+    def __init__(self, uri, contents=None):
         """
         Create an Array wrapping a TileDB Array class
         :param uri:
@@ -54,6 +54,8 @@ class Array:
         self.contents_fetched = False
         self.cached_meta = {}
         self.cache_metadata()
+        # Cache contents if exist during first array write
+        self.cached_contents = contents
 
     def read(self):
         """
@@ -62,6 +64,14 @@ class Array:
         """
 
         try:
+            if self.cached_contents is not None:
+                contents = self.cached_contents
+                # Invalidate cached contents after first read
+                # Used only to speed up first read after creation, avoiding the roundtrip to the server
+                # since contents are already available
+                self.cached_contents = None
+                return contents
+
             if self.contents_fetched:
                 self.reopen()
 
@@ -489,6 +499,9 @@ class TileDBContents(ContentsManager):
                 A.meta["format"] = format
             if type is not None:
                 A.meta["type"] = type
+
+        if tiledb_uri not in arrays:
+            arrays[tiledb_uri] = Array(tiledb_uri, {"contents": contents})
 
         return final_array_name
 
