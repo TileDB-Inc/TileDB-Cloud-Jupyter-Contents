@@ -1355,7 +1355,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
 
             tiledb_uri = self.tiledb_uri_from_path(path_fixed)
             try:
-                return tiledb.cloud.array.deregister_array(tiledb_uri)
+                return tiledb.cloud.array.delete_array(tiledb_uri, "application/x-ipynb+json")
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
                 raise http_error(
                     500, "Error deregistering {}: ".format(tiledb_uri, str(e))
