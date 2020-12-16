@@ -1355,7 +1355,26 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
 
             tiledb_uri = self.tiledb_uri_from_path(path_fixed)
             try:
-                return tiledb.cloud.array.deregister_array(tiledb_uri)
+                tiledb.cloud.array.deregister_array(tiledb_uri)
+
+                parts = path_fixed.split("/")
+                parts_len = len(parts)
+
+                namespace = parts[parts_len - 2]
+                s3_prefix = get_s3_prefix(namespace)
+                if s3_prefix is None:
+                    raise http_error(
+                        400,
+                        "Notebook was deregistered but physical array was not deleted. Please delete the notebook manually".format(
+                            namespace
+                        ),
+                    )
+                    return none
+
+                array_name = parts[parts_len - 1]
+                s3_uri = os.path.join(s3_prefix, array_name)
+
+                return tiledb.remove(s3_uri, TILEDB_CONTEXT)
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
                 raise http_error(
                     500, "Error deregistering {}: ".format(tiledb_uri, str(e))
