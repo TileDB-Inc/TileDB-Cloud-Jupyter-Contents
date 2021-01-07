@@ -386,6 +386,15 @@ class TileDBContents(ContentsManager):
             namespace = parts[parts_len - 2]
             array_name = parts[parts_len - 1] + "_" + self.id_generator()
 
+            if namespace is not None and \
+                    (namespace == "cloud" or namespace == "owned" or namespace == "public" or namespace == "shared"):
+                raise http_error(
+                    400,
+                    "{} is not a valid folder to create notebooks, please select a proper namespace (username or organization name)".format(
+                        namespace
+                    ),
+                )
+
             s3_prefix = get_s3_prefix(namespace)
             if s3_prefix is None:
                 raise http_error(
