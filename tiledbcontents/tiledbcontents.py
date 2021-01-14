@@ -434,6 +434,10 @@ class TileDBContents(ContentsManager):
 
             return tiledb_uri, array_name
         except tiledb.TileDBError as e:
+            if "Error while listing with prefix" in str(e):
+                # It is possible to land here if user sets wrong default s3 credentials with respect to default s3 path
+                raise HTTPError(400, "Error creating file, %s Are your credentials valid?" % str(e))
+
             if "already exists" in str(e):
                 parts = uri.split("/")
                 parts_length = len(parts)
