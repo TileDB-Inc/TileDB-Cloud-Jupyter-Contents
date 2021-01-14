@@ -47,7 +47,7 @@ class Array:
         try:
             self.array = tiledb.open(uri, ctx=TILEDB_CONTEXT)
         except Exception as e:
-            raise http_error(
+            raise HTTPError(
                 400,
                 "Error in Array init: {}".format(str(e)),
             )
@@ -80,7 +80,7 @@ class Array:
             if "file_size" in meta:
                 return self.array[slice(0, meta["file_size"])]
         except Exception as e:
-            raise http_error(
+            raise HTTPError(
                 400,
                 "Error in Array::read: {}".format(str(e)),
             )
@@ -98,7 +98,7 @@ class Array:
 
             self.array = tiledb.open(self.uri, ctx=TILEDB_CONTEXT)
         except Exception as e:
-            raise http_error(
+            raise HTTPError(
                 400,
                 "Error in Array::reopen: {}".format(str(e)),
             )
@@ -108,7 +108,7 @@ class Array:
             for k, v in self.array.meta.items():
                 self.cached_meta[k] = v
         except Exception as e:
-            raise http_error(
+            raise HTTPError(
                 400,
                 "Error in Array::cache_metadata: {}".format(str(e)),
             )
@@ -195,16 +195,12 @@ def get_cloud_enabled():
             return True
 
     except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-        raise http_error(
+        raise HTTPError(
             400,
             "Error fetching user default s3 path for new notebooks {}".format(str(e)),
         )
 
     return False
-
-
-def http_error(code, message):
-    return HTTPError(code=code, message=message, reason=message)
 
 
 def get_s3_prefix(namespace):
@@ -226,7 +222,7 @@ def get_s3_prefix(namespace):
             ):
                 return os.path.join(organization.default_s3_path, "notebooks")
     except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-        raise http_error(
+        raise HTTPError(
             400,
             "Error fetching user default s3 path for new notebooks {}".format(str(e)),
         )
@@ -386,14 +382,17 @@ class TileDBContents(ContentsManager):
             namespace = parts[parts_len - 2]
             array_name = parts[parts_len - 1] + "_" + self.id_generator()
 
+            if namespace is not None and \
+                    (namespace == "cloud" or namespace == "owned" or namespace == "public" or namespace == "shared"):
+                raise HTTPError(403, "`{}` is not a valid folder to create notebooks, please select a proper namespace (username or organization name)".format(
+                        namespace
+                    ))
+
             s3_prefix = get_s3_prefix(namespace)
             if s3_prefix is None:
-                raise http_error(
-                    400,
-                    "You must set the default s3 prefix path for notebooks in {} profile settings".format(
+                raise HTTPError(403, "You must set the default s3 prefix path for notebooks in {} profile settings".format(
                         namespace
-                    ),
-                )
+                    ))
 
             tiledb_uri_s3 = "tiledb://{}/{}".format(
                 namespace, os.path.join(s3_prefix, array_name)
@@ -435,6 +434,10 @@ class TileDBContents(ContentsManager):
 
             return tiledb_uri, array_name
         except tiledb.TileDBError as e:
+            if "Error while listing with prefix" in str(e):
+                # It is possible to land here if user sets wrong default s3 credentials with respect to default s3 path
+                raise HTTPError(400, "Error creating file, %s Are your credentials valid?" % str(e))
+
             if "already exists" in str(e):
                 parts = uri.split("/")
                 parts_length = len(parts)
@@ -452,7 +455,7 @@ class TileDBContents(ContentsManager):
         except HTTPError as e:
             raise e
         except Exception as e:
-            raise http_error(400, "Error creating file %s " % str(e))
+            raise HTTPError(400, "Error creating file %s " % str(e))
 
         return None
 
@@ -566,14 +569,14 @@ class TileDBContents(ContentsManager):
                 model["content"] = nb_content
                 self.validate_notebook_model(model)
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-                raise http_error(400, "Error fetching notebook info: {}".format(str(e)))
+                raise HTTPError(400, "Error fetching notebook info: {}".format(str(e)))
             except tiledb.TileDBError as e:
-                raise http_error(
+                raise HTTPError(
                     400,
                     "Error fetching notebook: {}".format(str(e)),
                 )
             except Exception as e:
-                raise http_error(
+                raise HTTPError(
                     400,
                     "Error fetching notebook: {}".format(str(e)),
                 )
@@ -634,14 +637,14 @@ class TileDBContents(ContentsManager):
                     model["content"] = nb_content
                     self.validate_notebook_model(model)
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-                raise http_error(500, "Error fetching file info: {}".format(str(e)))
+                raise HTTPError(500, "Error fetching file info: {}".format(str(e)))
             except tiledb.TileDBError as e:
-                raise http_error(
+                raise HTTPError(
                     500,
                     "Error fetching file: {}".format(str(e)),
                 )
             except Exception as e:
-                raise http_error(
+                raise HTTPError(
                     400,
                     "Error fetching file: {}".format(str(e)),
                 )
@@ -729,14 +732,14 @@ class TileDBContents(ContentsManager):
             if "mimetype" in meta:
                 return meta["mimetype"]
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-            raise http_error(500, "Error getting mimetype: {}".format(str(e)))
+            raise HTTPError(500, "Error getting mimetype: {}".format(str(e)))
         except tiledb.TileDBError as e:
-            raise http_error(
+            raise HTTPError(
                 500,
                 str(e),
             )
         except Exception as e:
-            raise http_error(
+            raise HTTPError(
                 400,
                 "Error getting file MIME: {}".format(str(e)),
             )
@@ -758,14 +761,14 @@ class TileDBContents(ContentsManager):
             if "type" in meta:
                 return meta["type"]
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-            raise http_error(500, "Error getting type: {}".format(str(e)))
+            raise HTTPError(500, "Error getting type: {}".format(str(e)))
         except tiledb.TileDBError as e:
-            raise http_error(
+            raise HTTPError(
                 500,
                 str(e),
             )
         except Exception as e:
-            raise http_error(
+            raise HTTPError(
                 400,
                 "Error getting file type: {}".format(str(e)),
             )
@@ -866,16 +869,16 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 )
             arrays = array_listing[listing_key].fetch().arrays()
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-            raise http_error(
+            raise HTTPError(
                 500, "Error listing notebooks in {}: {}".format(namespace, str(e))
             )
         except tiledb.TileDBError as e:
-            raise http_error(
+            raise HTTPError(
                 500,
                 str(e),
             )
         except Exception as e:
-            raise http_error(
+            raise HTTPError(
                 400,
                 "Error listing notebooks in  {}: {}".format(namespace, str(e)),
             )
@@ -929,16 +932,16 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
 
             arrays = array_listing[category].arrays()
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-            raise http_error(
+            raise HTTPError(
                 500, "Error listing notebooks in {}: {}".format(category, str(e))
             )
         except tiledb.TileDBError as e:
-            raise http_error(
+            raise HTTPError(
                 500,
                 str(e),
             )
         except Exception as e:
-            raise http_error(
+            raise HTTPError(
                 400,
                 "Error listing notebooks in  {}: {}".format(category, str(e)),
             )
@@ -975,17 +978,17 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                         namespaces[org.organization_name] = namespace_model
 
                 except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-                    raise http_error(
+                    raise HTTPError(
                         500,
                         "Error listing notebooks in {}: {}".format(category, str(e)),
                     )
                 except tiledb.TileDBError as e:
-                    raise http_error(
+                    raise HTTPError(
                         500,
                         str(e),
                     )
                 except Exception as e:
-                    raise http_error(
+                    raise HTTPError(
                         400,
                         "Error listing notebooks in  {}: {}".format(category, str(e)),
                     )
@@ -1132,16 +1135,16 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                             ] = notebook.last_accessed.replace(tzinfo=utc)
 
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-            raise http_error(
+            raise HTTPError(
                 500, "Error building cloud notebook info: {}".format(str(e))
             )
         except tiledb.TileDBError as e:
-            raise http_error(
+            raise HTTPError(
                 500,
                 str(e),
             )
         except Exception as e:
-            raise http_error(
+            raise HTTPError(
                 500, "Error building cloud notebook info: {}".format(str(e))
             )
 
@@ -1276,7 +1279,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 # if model is not None:
                 #     model.
         except Exception as e:
-            raise http_error(500, "Error getting {}: {}".format(path_fixed, str(e)))
+            raise HTTPError(500, "Error getting {}: {}".format(path_fixed, str(e)))
 
     def save(self, model, path=""):
         """
@@ -1292,12 +1295,12 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             path_fixed = "."
 
         if "type" not in model:
-            raise http_error(400, u"No file type provided")
+            raise HTTPError(400, u"No file type provided")
         if "content" not in model and model["type"] != "directory":
-            raise http_error(400, u"No file content provided")
+            raise HTTPError(400, u"No file content provided")
 
         if model["type"] not in ("directory", "file", "notebook"):
-            raise http_error(400, "Unhandled contents type: %s" % model["type"])
+            raise HTTPError(400, "Unhandled contents type: %s" % model["type"])
 
         if not self._is_remote_path(path_fixed):
             return super().save(model, path)
@@ -1328,7 +1331,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 validation_message = self._save_file_tiledb(model, path_fixed)
             else:
                 if self._is_remote_path(path_fixed):
-                    raise http_error(
+                    raise HTTPError(
                         400,
                         "Trying to create unsupported type: %s in cloud"
                         % model["type"],
@@ -1358,11 +1361,11 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 del arrays[tiledb_uri]
                 return tiledb.cloud.array.delete_array(tiledb_uri, "application/x-ipynb+json")
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-                raise http_error(
+                raise HTTPError(
                     500, "Error deregistering {}: ".format(tiledb_uri, str(e))
                 )
             except tiledb.TileDBError as e:
-                raise http_error(
+                raise HTTPError(
                     500,
                     str(e),
                 )
@@ -1388,9 +1391,9 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                     uri=tiledb_uri, notebook_name=array_name_new
                 )
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-                raise http_error(500, "Error renaming {}: ".format(tiledb_uri, str(e)))
+                raise HTTPError(500, "Error renaming {}: ".format(tiledb_uri, str(e)))
             except tiledb.TileDBError as e:
-                raise http_error(
+                raise HTTPError(
                     500,
                     str(e),
                 )
