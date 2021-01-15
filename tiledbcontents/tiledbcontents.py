@@ -1236,6 +1236,9 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 HTTPError(500, "Unknown file type %s for file '%s'" % (type_, path))
         return ret
 
+    def http_error(code, message):
+        return HTTPError(code=code, message=message, reason=message)
+
     def get(self, path, content=True, type=None, format=None):
         """Get a file or directory model."""
         path_fixed = path.strip("/")
@@ -1279,7 +1282,8 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 # if model is not None:
                 #     model.
         except Exception as e:
-            raise HTTPError(500, "Error getting {}: {}".format(path_fixed, str(e)))
+            raise http_error(500, "Error getting {}: {}".format(path_fixed, str(e)))
+
 
     def save(self, model, path=""):
         """
