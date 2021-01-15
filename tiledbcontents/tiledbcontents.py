@@ -838,6 +838,10 @@ class TileDBCheckpoints(GenericFileCheckpoints, TileDBContents, Checkpoints):
             return super().rename_checkpoint(checkpoint_id, old_path, new_path)
 
 
+def http_error(code, message):
+    return HTTPError(code=code, message=message)
+
+
 class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits):
     # This makes the checkpoints get saved on this directory
     root_dir = Unicode("./", config=True)
@@ -1235,9 +1239,6 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             else:
                 HTTPError(500, "Unknown file type %s for file '%s'" % (type_, path))
         return ret
-
-    def http_error(code, message):
-        return HTTPError(code=code, message=message, reason=message)
 
     def get(self, path, content=True, type=None, format=None):
         """Get a file or directory model."""
