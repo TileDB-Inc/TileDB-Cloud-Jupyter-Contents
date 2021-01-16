@@ -8,6 +8,8 @@ import numpy
 import pytz
 import string
 import random
+import sys
+import traceback
 
 utc = pytz.UTC
 
@@ -1283,7 +1285,19 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 # if model is not None:
                 #     model.
         except Exception as e:
-            raise http_error(500, "Error getting {}: {}".format(path_fixed, str(e)))
+            sys.stderr.write(
+                """Error executing GET:""" +
+                """\n------------------- GET Backtrace -------------------\n""" +
+                """\n-----------------------------------------------------\n""" +
+                """\n-----------------------------------------------------\n""" +
+                """\n-----------------------------------------------------\n""" +
+                ''.join(traceback.TracebackException.from_exception(e).format()) +
+                """\n-----------------------------------------------------\n""" +
+                """\n-----------------------------------------------------\n""" +
+                """\n-----------------------------------------------------\n""" +
+                """\n------------------- End Backtrace -------------------"""
+            )
+            # raise http_error(500, "Error getting {}: {}".format(path_fixed, str(e)))
 
 
     def save(self, model, path=""):
