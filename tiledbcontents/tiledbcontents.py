@@ -969,9 +969,11 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             model["format"] = "json"
             model["content"] = []
             namespaces = {}
-            if (arrays is None or len(arrays) == 0) and category == "owned":
-                # If the arrays are empty, and the category is for owned, we should list the user and their
-                # organizations so they can create new notebooks
+            if category == "owned":
+                # For owned, we should always list the user and their
+                # organizations. If there is actual notebooks they will be
+                # listed below. This base listing is so users can create new
+                # notebooks in any of the namespaces they are part of.
                 try:
                     profile = tiledb.cloud.client.user_profile()
                     namespace_model = base_directory_model(profile.username)
@@ -1010,7 +1012,8 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                         "Error listing notebooks in  {}: {}".format(category, str(e)),
                     )
 
-            elif arrays is not None:
+            # If the arrays are non-empty list them out
+            if arrays is not None:
                 for notebook in arrays:
                     if notebook.namespace not in namespaces:
                         namespace_model = base_directory_model(notebook.namespace)
