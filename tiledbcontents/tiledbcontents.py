@@ -840,10 +840,6 @@ class TileDBCheckpoints(GenericFileCheckpoints, TileDBContents, Checkpoints):
             return super().rename_checkpoint(checkpoint_id, old_path, new_path)
 
 
-def http_error(code, message):
-    return HTTPError(code=code, message=message)
-
-
 class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits):
     # This makes the checkpoints get saved on this directory
     root_dir = Unicode("./", config=True)
@@ -1285,19 +1281,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 # if model is not None:
                 #     model.
         except Exception as e:
-            sys.stderr.write(
-                """Error executing GET:""" +
-                """\n------------------- GET Backtrace -------------------\n""" +
-                """\n-----------------------------------------------------\n""" +
-                """\n-----------------------------------------------------\n""" +
-                """\n-----------------------------------------------------\n""" +
-                ''.join(traceback.TracebackException.from_exception(e).format()) +
-                """\n-----------------------------------------------------\n""" +
-                """\n-----------------------------------------------------\n""" +
-                """\n-----------------------------------------------------\n""" +
-                """\n------------------- End Backtrace -------------------"""
-            )
-            # raise http_error(500, "Error getting {}: {}".format(path_fixed, str(e)))
+            raise HTTPError(500, "Error opening notebook {}: {}".format(path_fixed, str(e)))
 
 
     def save(self, model, path=""):
