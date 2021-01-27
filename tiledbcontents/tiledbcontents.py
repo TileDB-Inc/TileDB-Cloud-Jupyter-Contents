@@ -384,17 +384,27 @@ class TileDBContents(ContentsManager):
             namespace = parts[parts_len - 2]
             array_name = parts[parts_len - 1] + "_" + self.id_generator()
 
-            if namespace is not None and \
-                    (namespace == "cloud" or namespace == "owned" or namespace == "public" or namespace == "shared"):
-                raise HTTPError(403, "`{}` is not a valid folder to create notebooks, please select a proper namespace (username or organization name)".format(
+            if namespace is not None and (
+                namespace == "cloud"
+                or namespace == "owned"
+                or namespace == "public"
+                or namespace == "shared"
+            ):
+                raise HTTPError(
+                    403,
+                    "`{}` is not a valid folder to create notebooks, please select a proper namespace (username or organization name)".format(
                         namespace
-                    ))
+                    ),
+                )
 
             s3_prefix = get_s3_prefix(namespace)
             if s3_prefix is None:
-                raise HTTPError(403, "You must set the default s3 prefix path for notebooks in {} profile settings".format(
+                raise HTTPError(
+                    403,
+                    "You must set the default s3 prefix path for notebooks in {} profile settings".format(
                         namespace
-                    ))
+                    ),
+                )
 
             tiledb_uri_s3 = "tiledb://{}/{}".format(
                 namespace, os.path.join(s3_prefix, array_name)
@@ -438,7 +448,9 @@ class TileDBContents(ContentsManager):
         except tiledb.TileDBError as e:
             if "Error while listing with prefix" in str(e):
                 # It is possible to land here if user sets wrong default s3 credentials with respect to default s3 path
-                raise HTTPError(400, "Error creating file, %s Are your credentials valid?" % str(e))
+                raise HTTPError(
+                    400, "Error creating file, %s Are your credentials valid?" % str(e)
+                )
 
             if "already exists" in str(e):
                 parts = uri.split("/")
@@ -496,7 +508,7 @@ class TileDBContents(ContentsManager):
             tiledb_uri, final_array_name = self._create_array(tiledb_uri, 5)
 
         with tiledb.open(tiledb_uri, mode="w", ctx=TILEDB_CONTEXT) as A:
-            A[0:len(contents)] = {"contents": contents}
+            A[0 : len(contents)] = {"contents": contents}
             A.meta["file_size"] = len(contents)
             if mimetype is not None:
                 A.meta["mimetype"] = mimetype
@@ -517,8 +529,10 @@ class TileDBContents(ContentsManager):
         :param uri: array URI to write
         :return:
         """
-        if model['type'] is not 'notebook':
-            raise HTTPError(403, 'Only notebooks are allowed to create in cloud folders')
+        if model["type"] is not "notebook":
+            raise HTTPError(
+                403, "Only notebooks are allowed to create in cloud folders"
+            )
 
         file_contents = model["content"]
         return self._write_bytes_to_array(
@@ -914,7 +928,10 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
 
                     nbmodel["type"] = "notebook"
 
-                    if notebook.allowed_actions is None or "write" not in notebook.allowed_actions:
+                    if (
+                        notebook.allowed_actions is None
+                        or "write" not in notebook.allowed_actions
+                    ):
                         model["writable"] = False
                     model["content"].append(nbmodel)
 
@@ -954,9 +971,11 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             model["format"] = "json"
             model["content"] = []
             namespaces = {}
-            if (arrays is None or len(arrays) == 0) and category == "owned":
-                # If the arrays are empty, and the category is for owned, we should list the user and their
-                # organizations so they can create new notebooks
+            if category == "owned":
+                # For owned, we should always list the user and their
+                # organizations. If there is actual notebooks they will be
+                # listed below. This base listing is so users can create new
+                # notebooks in any of the namespaces they are part of.
                 try:
                     profile = tiledb.cloud.client.user_profile()
                     namespace_model = base_directory_model(profile.username)
@@ -995,7 +1014,8 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                         "Error listing notebooks in  {}: {}".format(category, str(e)),
                     )
 
-            elif arrays is not None:
+            # If the arrays are non-empty list them out
+            if arrays is not None:
                 for notebook in arrays:
                     if notebook.namespace not in namespaces:
                         namespace_model = base_directory_model(notebook.namespace)
@@ -1362,7 +1382,9 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             tiledb_uri = self.tiledb_uri_from_path(path_fixed)
             try:
                 del arrays[tiledb_uri]
-                return tiledb.cloud.array.delete_array(tiledb_uri, "application/x-ipynb+json")
+                return tiledb.cloud.array.delete_array(
+                    tiledb_uri, "application/x-ipynb+json"
+                )
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
                 raise HTTPError(
                     500, "Error deregistering {}: ".format(tiledb_uri, str(e))
