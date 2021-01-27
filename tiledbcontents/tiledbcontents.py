@@ -218,10 +218,7 @@ def get_s3_prefix(namespace):
                 return os.path.join(profile.default_s3_path, "notebooks")
         else:
             organization = tiledb.cloud.client.organization(namespace)
-            if (
-                organization.default_s3_path is not None
-                and organization.default_s3_path is not None
-            ):
+            if organization.default_s3_path is not None:
                 return os.path.join(organization.default_s3_path, "notebooks")
     except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
         raise HTTPError(
@@ -231,6 +228,28 @@ def get_s3_prefix(namespace):
 
     return None
 
+def get_s3_credentials(namespace):
+    """
+    Get credentials for default S3 path from the user profile or organization profile
+    :return: s3 credentials or error
+    """
+    try:
+        profile = tiledb.cloud.client.user_profile()
+
+        if namespace == profile.username:
+            if profile.default_s3_path_credentials_name is not None:
+                return profile.default_s3_path_credentials_name
+        else:
+            organization = tiledb.cloud.client.organization(namespace)
+            if organization.default_s3_path is not None:
+                return profile.default_s3_path_credentials_name
+    except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+        raise HTTPError(
+            400,
+            "Error fetching user credentials for default s3 path for new notebooks {}".format(str(e)),
+        )
+
+    return None
 
 def base_model(path):
     """
@@ -354,6 +373,23 @@ class TileDBContents(ContentsManager):
         :return:
         """
         try:
+            parts = uri.split("/")
+            parts_len = len(parts)
+            namespace = parts[parts_len - 2]
+            array_name = parts[parts_len - 1] + "_" + self.id_generator()
+
+            # Initialize context
+            tiledb_create_context = TILEDB_CONTEXT
+
+            s3_credentials = get_s3_credentials(namespace)
+            # Retrieving credentials is optional
+            # If None, default credentials will be used
+            if s3_credentials is not None:
+                cfg_dict = {}
+                cfg_dict["rest.creation_access_credentials_name"] = s3_credentials
+                # update context with config having header set
+                tiledb_create_context = tiledb.cloud.Ctx(cfg_dict)
+
             # The array will be be 1 dimensional with domain of 0 to max uint64. We use a tile extent of 1024 bytes
             dom = tiledb.Domain(
                 tiledb.Dim(
@@ -361,9 +397,9 @@ class TileDBContents(ContentsManager):
                     domain=(0, numpy.iinfo(numpy.uint64).max - 1025),
                     tile=1024,
                     dtype=numpy.uint64,
-                    ctx=TILEDB_CONTEXT,
+                    ctx=tiledb_create_context,
                 ),
-                ctx=TILEDB_CONTEXT,
+                ctx=tiledb_create_context,
             )
 
             schema = tiledb.ArraySchema(
@@ -376,13 +412,8 @@ class TileDBContents(ContentsManager):
                         filters=tiledb.FilterList([tiledb.ZstdFilter()]),
                     )
                 ],
-                ctx=TILEDB_CONTEXT,
+                ctx=tiledb_create_context,
             )
-
-            parts = uri.split("/")
-            parts_len = len(parts)
-            namespace = parts[parts_len - 2]
-            array_name = parts[parts_len - 1] + "_" + self.id_generator()
 
             if namespace is not None and (
                 namespace == "cloud"
