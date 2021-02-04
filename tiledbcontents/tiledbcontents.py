@@ -1412,7 +1412,8 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
 
             tiledb_uri = self.tiledb_uri_from_path(path_fixed)
             try:
-                del arrays[tiledb_uri]
+                if tiledb_uri in arrays:
+                    del arrays[tiledb_uri]
                 return tiledb.cloud.array.delete_array(
                     tiledb_uri, "application/x-ipynb+json"
                 )
@@ -1442,7 +1443,8 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             array_name_new = parts_new[parts_new_length - 1]
 
             try:
-                del arrays[tiledb_uri]
+                if tiledb_uri in arrays:
+                    del arrays[tiledb_uri]
                 return tiledb.cloud.notebook.rename_notebook(
                     uri=tiledb_uri, notebook_name=array_name_new
                 )
