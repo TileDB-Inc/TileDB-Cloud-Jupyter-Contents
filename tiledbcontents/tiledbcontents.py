@@ -228,6 +228,7 @@ def get_s3_prefix(namespace):
 
     return None
 
+
 def get_s3_credentials(namespace):
     """
     Get credentials for default S3 path from the user profile or organization profile
@@ -246,10 +247,13 @@ def get_s3_credentials(namespace):
     except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
         raise HTTPError(
             400,
-            "Error fetching user credentials for default s3 path for new notebooks {}".format(str(e)),
+            "Error fetching user credentials for default s3 path for new notebooks {}".format(
+                str(e)
+            ),
         )
 
     return None
+
 
 def base_model(path):
     """
@@ -312,7 +316,14 @@ class TileDBContents(ContentsManager):
         file_contents = numpy.array(bytearray(json.dumps(model["content"]), "utf-8"))
 
         final_name = self._write_bytes_to_array(
-            uri, file_contents, model.get("mimetype"), model.get("format"), "notebook"
+            uri,
+            file_contents,
+            model.get("mimetype"),
+            model.get("format"),
+            "notebook",
+            model["s3_prefix"] if "s3_prefix" in model else None,
+            model["s3_credentials"] if "s3_credentials" in model else None,
+            "name" in model,
         )
 
         self.validate_notebook_model(model)
@@ -361,15 +372,68 @@ class TileDBContents(ContentsManager):
         )
         return name
 
+    def _increment_notebook(self, filename, insert="-"):
+        """Increment a notebook filename until it is unique.
+
+        Parameters
+        ----------
+        filename : unicode
+            The name of a file, including extension
+        path : unicode
+            The API path of the target's directory
+        insert: unicode
+            The characters to insert after the base filename
+
+        Returns
+        -------
+        name : unicode
+            A filename that is unique, based on the input filename.
+        """
+        # Extract the full suffix from the filename (e.g. .tar.gz)
+        basename, dot, ext = filename.rpartition(".")
+        if ext != "ipynb":
+            basename, dot, ext = filename.partition(".")
+
+        suffix = dot + ext
+
+        parts = basename.split(insert)
+        start = 0
+        if len(parts) > 1:
+            start_str = parts[len(parts) - 1]
+            if start_str.isdigit():
+                start = int(start_str)
+
+            basename = insert.join(parts[0 : len(parts) - 1])
+
+        start += 1
+        if start:
+            insert_i = "{}{}".format(insert, start)
+        else:
+            insert_i = ""
+        name = u"{basename}{insert}{suffix}".format(
+            basename=basename, insert=insert_i, suffix=suffix
+        )
+        return name
+
     def id_generator(self, size=6, chars=string.ascii_uppercase + string.digits):
         return "".join(random.choice(chars) for _ in range(size))
 
-    def _create_array(self, uri, retry=0):
+    def _create_array(
+        self,
+        uri,
+        retry=0,
+        s3_prefix=None,
+        s3_credentials=None,
+        is_user_defined_name=False,
+    ):
         """
         Create a new array for storing notebook file
         :param uri: location to create array
         :param name: name to register under
         :param retry: number of times to retry request
+        :param s3_prefix: S3 path to write to
+        :param s3_credentials: S3 credentials associated with the S3 prefix as labelled on TileDB Cloud
+        :param is_user_defined_name: boolean indicating whether the user provided their own filename
         :return:
         """
         try:
@@ -381,9 +445,11 @@ class TileDBContents(ContentsManager):
             # Initialize context
             tiledb_create_context = TILEDB_CONTEXT
 
-            s3_credentials = get_s3_credentials(namespace)
-            # Retrieving credentials is optional
-            # If None, default credentials will be used
+            if s3_credentials is None:
+                s3_credentials = get_s3_credentials(namespace)
+                # Retrieving credentials is optional
+                # If None, default credentials will be used
+
             if s3_credentials is not None:
                 cfg_dict = {}
                 cfg_dict["rest.creation_access_credentials_name"] = s3_credentials
@@ -415,6 +481,11 @@ class TileDBContents(ContentsManager):
                 ctx=tiledb_create_context,
             )
 
+            if is_user_defined_name:
+                array_name = parts[parts_len - 1]
+            else:
+                array_name = parts[parts_len - 1] + "_" + self.id_generator()
+
             if namespace is not None and (
                 namespace == "cloud"
                 or namespace == "owned"
@@ -428,14 +499,28 @@ class TileDBContents(ContentsManager):
                     ),
                 )
 
-            s3_prefix = get_s3_prefix(namespace)
-            if s3_prefix is None:
+            if namespace is not None and (
+                namespace == "cloud"
+                or namespace == "owned"
+                or namespace == "public"
+                or namespace == "shared"
+            ):
                 raise HTTPError(
                     403,
-                    "You must set the default s3 prefix path for notebooks in {} profile settings".format(
+                    "`{}` is not a valid folder to create notebooks, please select a proper namespace (username or organization name)".format(
                         namespace
                     ),
                 )
+
+            if s3_prefix == None:
+                s3_prefix = get_s3_prefix(namespace)
+                if s3_prefix is None:
+                    raise HTTPError(
+                        403,
+                        "You must set the default s3 prefix path for notebooks in {} profile settings".format(
+                            namespace
+                        ),
+                    )
 
             tiledb_uri_s3 = "tiledb://{}/{}".format(
                 namespace, os.path.join(s3_prefix, array_name)
@@ -493,10 +578,14 @@ class TileDBContents(ContentsManager):
                 parts[parts_length - 1] = array_name
                 uri = "/".join(parts)
 
-                return self._create_array(uri, retry)
+                return self._create_array(
+                    uri, retry, s3_prefix, s3_credentials, is_user_defined_name
+                )
             elif retry:
                 retry -= 1
-                return self._create_array(uri, retry)
+                return self._create_array(
+                    uri, retry, s3_prefix, s3_credentials, is_user_defined_name
+                )
         except HTTPError as e:
             raise e
         except Exception as e:
@@ -521,7 +610,15 @@ class TileDBContents(ContentsManager):
         return False
 
     def _write_bytes_to_array(
-        self, uri, contents, mimetype=None, format=None, type=None
+        self,
+        uri,
+        contents,
+        mimetype=None,
+        format=None,
+        type=None,
+        s3_prefix=None,
+        s3_credentials=None,
+        is_user_defined_name=False,
     ):
         """
         Write given bytes to the array. Will create the array if it does not exist
@@ -530,13 +627,18 @@ class TileDBContents(ContentsManager):
         :param mimetype: mimetype to set in metadata
         :param format: format to set in metadata
         :param type: type to set in metadata
+        :param s3_prefix: S3 path to write to
+        :param s3_credentials: S3 credentials associated with the S3 prefix as labelled on TileDB Cloud
+        :param is_user_defined_name: boolean indicating whether the user provided their own filename
         :return:
         """
         tiledb_uri = self.tiledb_uri_from_path(uri)
         final_array_name = None
         if self._is_new:
             # if not self._array_exists(uri):
-            tiledb_uri, final_array_name = self._create_array(tiledb_uri, 5)
+            tiledb_uri, final_array_name = self._create_array(
+                tiledb_uri, 5, s3_prefix, s3_credentials, is_user_defined_name
+            )
 
         with tiledb.open(tiledb_uri, mode="w", ctx=TILEDB_CONTEXT) as A:
             A[0 : len(contents)] = {"contents": contents}
@@ -1332,8 +1434,9 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 # if model is not None:
                 #     model.
         except Exception as e:
-            raise HTTPError(500, "Error opening notebook {}: {}".format(path_fixed, str(e)))
-
+            raise HTTPError(
+                500, "Error opening notebook {}: {}".format(path_fixed, str(e))
+            )
 
     def save(self, model, path=""):
         """
@@ -1523,3 +1626,54 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 path_fixed = path_fixed[: -1 * len(NOTEBOOK_EXT)]
             return self._array_exists(path_fixed)
         return super().file_exists(path)
+
+    def new_untitled(self, path="", type="", ext="", options=""):
+        """Create a new untitled file or directory in path
+        path must be a directory
+        File extension can be specified.
+        Use `new` to create files with a fully specified path (including filename).
+        options is a json string passed by the TileDB Prompt User Contents Jupyterlab notebook extension for additional notebook creation options
+        """
+        path = path.strip("/")
+        if not self.dir_exists(path):
+            raise HTTPError(404, "No such directory: %s" % path)
+
+        model = {}
+        if type:
+            model["type"] = type
+
+        if ext == ".ipynb":
+            model.setdefault("type", "notebook")
+        else:
+            model.setdefault("type", "file")
+
+        if options:
+            try:
+                options_json = json.loads(options)
+                model["name"] = options_json["name"]
+                model["s3_prefix"] = options_json["s3_prefix"]
+                model["s3_credentials"] = options_json["s3_credentials"]
+            except Exception as e:
+                raise HTTPError(
+                    400, u"Could not read TileDB user options: {}".format(e)
+                )
+
+        if model["type"] == "notebook" and "name" in model:
+            path = u"{0}/{1}".format(path, model["name"] + ".ipynb")
+            return self.new(model, path)
+
+        insert = ""
+        if model["type"] == "directory":
+            untitled = self.untitled_directory
+            insert = " "
+        elif model["type"] == "notebook":
+            untitled = self.untitled_notebook
+            ext = ".ipynb"
+        elif model["type"] == "file":
+            untitled = self.untitled_file
+        else:
+            raise HTTPError(400, "Unexpected model type: %r" % model["type"])
+
+        name = self.increment_filename(untitled + ext, path, insert=insert)
+        path = u"{0}/{1}".format(path, name)
+        return self.new(model, path)
