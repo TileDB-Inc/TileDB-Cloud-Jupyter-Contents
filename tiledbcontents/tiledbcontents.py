@@ -242,13 +242,13 @@ def get_s3_credentials(namespace):
                 return profile.default_s3_path_credentials_name
         else:
             organization = tiledb.cloud.client.organization(namespace)
-            if organization.default_s3_path is not None:
+            if organization.default_s3_path_credentials_name is not None:
                 return organization.default_s3_path_credentials_name
     except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
         raise HTTPError(
             400,
-            "Error fetching user credentials for default s3 path for new notebooks {}".format(
-                str(e)
+            "Error fetching default credentials for {} default s3 path for new notebooks {}".format(
+                namespace, str(e)
             ),
         )
 
