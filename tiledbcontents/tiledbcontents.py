@@ -710,7 +710,7 @@ class TileDBContents(ContentsManager):
                 file_content = arr.read()
                 if file_content is not None:
                     nb_content = reads(
-                        file_content["contents"].tostring().decode("utf-8"),
+                        file_content["contents"].tostring().decode("utf-8", "backslashreplace"),
                         as_version=NBFORMAT_VERSION,
                     )
                     self.mark_trusted_cells(nb_content, uri)
@@ -778,7 +778,7 @@ class TileDBContents(ContentsManager):
                     and file_content is not None
                 ):
                     nb_content = reads(
-                        file_content["contents"].tostring().decode("utf-8"),
+                        file_content["contents"].tostring().decode("utf-8", "backslashreplace"),
                         as_version=NBFORMAT_VERSION,
                     )
                     self.mark_trusted_cells(nb_content, uri)
