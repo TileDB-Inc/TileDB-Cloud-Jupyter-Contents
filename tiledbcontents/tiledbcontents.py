@@ -1,26 +1,26 @@
-import os
-import json
 import datetime
+import json
+import os
+import random
+import string
 import time
-import tiledb
-import tiledb.cloud
+
 import numpy
 import pytz
-import string
-import random
-import sys
-import traceback
-
-utc = pytz.UTC
-
+import tiledb
+import tiledb.cloud
 from notebook.services.contents.checkpoints import Checkpoints
 from notebook.services.contents.filemanager import FileContentsManager
-
 from tornado.web import HTTPError
 
 from .ipycompat import ContentsManager
-from .ipycompat import HasTraits, Unicode
-from .ipycompat import reads, from_dict, GenericFileCheckpoints
+from .ipycompat import GenericFileCheckpoints
+from .ipycompat import HasTraits
+from .ipycompat import Unicode
+from .ipycompat import from_dict
+from .ipycompat import reads
+
+utc = pytz.UTC
 
 DUMMY_CREATED_DATE = datetime.datetime.fromtimestamp(86400)
 NBFORMAT_VERSION = 4
@@ -512,7 +512,7 @@ class TileDBContents(ContentsManager):
                     ),
                 )
 
-            if s3_prefix == None:
+            if s3_prefix is None:
                 s3_prefix = get_s3_prefix(namespace)
                 if s3_prefix is None:
                     raise HTTPError(
@@ -662,7 +662,7 @@ class TileDBContents(ContentsManager):
         :param uri: array URI to write
         :return:
         """
-        if model["type"] is not "notebook":
+        if model["type"] != "notebook":
             raise HTTPError(
                 403, "Only notebooks are allowed to create in cloud folders"
             )
@@ -855,9 +855,8 @@ class TileDBContents(ContentsManager):
                 try:
                     tiledb_uri = self.tiledb_uri_from_path(path_fixed)
                     return self._get_type(tiledb_uri)
-                except Exception as e:
+                except Exception:
                     return "directory"
-            return "file"
 
         if path.endswith(".ipynb"):
             return "notebook"
@@ -1522,7 +1521,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 )
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
                 raise HTTPError(
-                    500, "Error deregistering {}: ".format(tiledb_uri, str(e))
+                    500, f"Error deregistering {tiledb_uri!r}: {e}"
                 )
             except tiledb.TileDBError as e:
                 raise HTTPError(
@@ -1552,7 +1551,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                     uri=tiledb_uri, notebook_name=array_name_new
                 )
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-                raise HTTPError(500, "Error renaming {}: ".format(tiledb_uri, str(e)))
+                raise HTTPError(500, f"Error renaming {tiledb_uri!r}: {e}")
             except tiledb.TileDBError as e:
                 raise HTTPError(
                     500,
