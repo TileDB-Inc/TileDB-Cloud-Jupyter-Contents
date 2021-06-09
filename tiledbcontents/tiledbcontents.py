@@ -1,3 +1,4 @@
+import base64
 import datetime
 import json
 import os
@@ -651,23 +652,6 @@ class TileDBContents(manager.ContentsManager):
             arrays[tiledb_uri] = Array(tiledb_uri, {"contents": contents})
 
         return final_array_name
-
-    def _save_file_tiledb(self, model, uri):
-        """
-        Wrapper function for saving a file as a tiledb array
-        :param model: notebook model to write
-        :param uri: array URI to write
-        :return:
-        """
-        if model["type"] != "notebook":
-            raise tornado.web.HTTPError(
-                403, "Only notebooks are allowed to create in cloud folders"
-            )
-
-        file_contents = model["content"]
-        return self._write_bytes_to_array(
-            uri, file_contents, model.get("mimetype"), model.get("format"), "file"
-        )
 
     def tiledb_uri_from_path(self, path):
         """
@@ -1441,25 +1425,29 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         should call self.run_pre_save_hook(model=model, path=path) prior to
         writing any data.
         """
-        self.run_pre_save_hook(model=model, path=path)
-        path_fixed = path.strip("/")
+        path_fixed = path.strip("/") or "."
 
-        if path_fixed is None or path_fixed == "":
-            path_fixed = "."
+        try:
+            model_type = model["type"]
+        except KeyError:
+            raise tornado.web.HTTPError(400, "No file type provided")
 
-        if "type" not in model:
-            raise tornado.web.HTTPError(400, u"No file type provided")
-        if "content" not in model and model["type"] != "directory":
+        if "content" not in model and model_type != "directory":
             raise tornado.web.HTTPError(400, u"No file content provided")
 
-        if model["type"] not in ("directory", "file", "notebook"):
+        if model_type not in ("directory", "file", "notebook"):
             raise tornado.web.HTTPError(400, "Unhandled contents type: %s" % model["type"])
 
         if not self._is_remote_path(path_fixed):
             return super().save(model, path)
 
         if path_fixed.endswith(NOTEBOOK_EXT):
-            path_fixed = path_fixed[: -1 * len(NOTEBOOK_EXT)]
+            path_fixed = path_fixed[:-len(NOTEBOOK_EXT)]
+            if model["type"] == "file":
+                try:
+                    _try_convert_file_to_notebook(model)
+                except ValueError as ve:
+                    raise tornado.web.HTTPError(400, f"Cannot parse Jupyter notebook: {ve}")
 
         self._is_new = True
         if (
@@ -1469,6 +1457,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         ):
             self._is_new = False
 
+        self.run_pre_save_hook(model=model, path=path)
         validation_message = None
         try:
             if model["type"] == "notebook":
@@ -1481,7 +1470,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                     parts[parts_length - 1] = final_name
                     path = "/".join(parts)
             elif model["type"] == "file":
-                validation_message = self._save_file_tiledb(model, path_fixed)
+                raise tornado.web.HTTPError(400, "Only .ipynb files may be created in the cloud.")
             else:
                 if self._is_remote_path(path_fixed):
                     raise tornado.web.HTTPError(
@@ -1494,7 +1483,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                 # validation_message = self.__create_directory_and_group(path)
         except Exception as e:
             self.log.error("Error while saving file: %s %s", path, e, exc_info=True)
-            raise e
+            raise
 
         model = self.get(path, type=model["type"], content=False)
         if validation_message is not None:
@@ -1673,3 +1662,34 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         name = self.increment_filename(untitled + ext, path, insert=insert)
         path = u"{0}/{1}".format(path, name)
         return self.new(model, path)
+
+
+def _try_convert_file_to_notebook(model):
+    """Attempts to convert the passed ``model`` from a "file" to a "notebook".
+
+    Modifies the passed-in model in-place. If the model cannot be converted
+    to a notebook, the model is guaranteed to be unmodified.
+
+    Raises a ValueError if there is any error converting the notebook.
+    """
+
+    try:
+        fmt = model["format"]
+        raw_content = model["content"]
+    except KeyError as ke:
+        raise ValueError(f"missing model key {ke.args[0]}")
+
+    if fmt == "text":
+        content = raw_content
+    elif fmt == "base64":
+        content = base64.b64decode(raw_content).decode("utf-8")
+    else:
+        raise ValueError(f"unknown content format {fmt!r}")
+
+    nb = nbformat.reads(content, NBFORMAT_VERSION)
+
+    model.update(
+        format="json",
+        mimetype=None,
+        content=nb,
+    )
