@@ -5,20 +5,17 @@ import random
 import string
 import time
 
+import nbformat
 import numpy
 import pytz
 import tiledb
 import tiledb.cloud
-from notebook.services.contents.checkpoints import Checkpoints
-from notebook.services.contents.filemanager import FileContentsManager
-from tornado.web import HTTPError
-
-from .ipycompat import ContentsManager
-from .ipycompat import GenericFileCheckpoints
-from .ipycompat import HasTraits
-from .ipycompat import Unicode
-from .ipycompat import from_dict
-from .ipycompat import reads
+import tornado.web
+import traitlets
+from notebook.services.contents import checkpoints
+from notebook.services.contents import filecheckpoints
+from notebook.services.contents import filemanager
+from notebook.services.contents import manager
 
 utc = pytz.UTC
 
@@ -49,7 +46,7 @@ class Array:
         try:
             self.array = tiledb.open(uri, ctx=TILEDB_CONTEXT)
         except Exception as e:
-            raise HTTPError(
+            raise tornado.web.HTTPError(
                 400,
                 "Error in Array init: {}".format(str(e)),
             )
@@ -82,7 +79,7 @@ class Array:
             if "file_size" in meta:
                 return self.array[slice(0, meta["file_size"])]
         except Exception as e:
-            raise HTTPError(
+            raise tornado.web.HTTPError(
                 400,
                 "Error in Array::read: {}".format(str(e)),
             )
@@ -100,7 +97,7 @@ class Array:
 
             self.array = tiledb.open(self.uri, ctx=TILEDB_CONTEXT)
         except Exception as e:
-            raise HTTPError(
+            raise tornado.web.HTTPError(
                 400,
                 "Error in Array::reopen: {}".format(str(e)),
             )
@@ -110,7 +107,7 @@ class Array:
             for k, v in self.array.meta.items():
                 self.cached_meta[k] = v
         except Exception as e:
-            raise HTTPError(
+            raise tornado.web.HTTPError(
                 400,
                 "Error in Array::cache_metadata: {}".format(str(e)),
             )
@@ -197,7 +194,7 @@ def get_cloud_enabled():
             return True
 
     except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-        raise HTTPError(
+        raise tornado.web.HTTPError(
             400,
             "Error fetching user default s3 path for new notebooks {}".format(str(e)),
         )
@@ -221,7 +218,7 @@ def get_s3_prefix(namespace):
             if organization.default_s3_path is not None:
                 return os.path.join(organization.default_s3_path, "notebooks")
     except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-        raise HTTPError(
+        raise tornado.web.HTTPError(
             400,
             "Error fetching user default s3 path for new notebooks {}".format(str(e)),
         )
@@ -245,7 +242,7 @@ def get_s3_credentials(namespace):
             if organization.default_s3_path_credentials_name is not None:
                 return organization.default_s3_path_credentials_name
     except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-        raise HTTPError(
+        raise tornado.web.HTTPError(
             400,
             "Error fetching default credentials for {} default s3 path for new notebooks {}".format(
                 namespace, str(e)
@@ -299,7 +296,7 @@ def remove_path_prefix(path_prefix, path):
     return ret
 
 
-class TileDBContents(ContentsManager):
+class TileDBContents(manager.ContentsManager):
     """
     A general class for TileDB Contents, parent of the actual contents class and checkpoints
     """
@@ -311,7 +308,7 @@ class TileDBContents(ContentsManager):
         :param uri: URI of notebook
         :return: any messages
         """
-        nb_contents = from_dict(model["content"])
+        nb_contents = nbformat.from_dict(model["content"])
         self.check_and_sign(nb_contents, uri)
         file_contents = numpy.array(bytearray(json.dumps(model["content"]), "utf-8"))
 
@@ -492,7 +489,7 @@ class TileDBContents(ContentsManager):
                 or namespace == "public"
                 or namespace == "shared"
             ):
-                raise HTTPError(
+                raise tornado.web.HTTPError(
                     403,
                     "`{}` is not a valid folder to create notebooks, please select a proper namespace (username or organization name)".format(
                         namespace
@@ -505,7 +502,7 @@ class TileDBContents(ContentsManager):
                 or namespace == "public"
                 or namespace == "shared"
             ):
-                raise HTTPError(
+                raise tornado.web.HTTPError(
                     403,
                     "`{}` is not a valid folder to create notebooks, please select a proper namespace (username or organization name)".format(
                         namespace
@@ -515,7 +512,7 @@ class TileDBContents(ContentsManager):
             if s3_prefix is None:
                 s3_prefix = get_s3_prefix(namespace)
                 if s3_prefix is None:
-                    raise HTTPError(
+                    raise tornado.web.HTTPError(
                         403,
                         "You must set the default s3 prefix path for notebooks in {} profile settings".format(
                             namespace
@@ -564,7 +561,7 @@ class TileDBContents(ContentsManager):
         except tiledb.TileDBError as e:
             if "Error while listing with prefix" in str(e):
                 # It is possible to land here if user sets wrong default s3 credentials with respect to default s3 path
-                raise HTTPError(
+                raise tornado.web.HTTPError(
                     400, "Error creating file, %s Are your credentials valid?" % str(e)
                 )
 
@@ -586,10 +583,10 @@ class TileDBContents(ContentsManager):
                 return self._create_array(
                     uri, retry, s3_prefix, s3_credentials, is_user_defined_name
                 )
-        except HTTPError as e:
+        except tornado.web.HTTPError as e:
             raise e
         except Exception as e:
-            raise HTTPError(400, "Error creating file %s " % str(e))
+            raise tornado.web.HTTPError(400, "Error creating file %s " % str(e))
 
         return None
 
@@ -663,7 +660,7 @@ class TileDBContents(ContentsManager):
         :return:
         """
         if model["type"] != "notebook":
-            raise HTTPError(
+            raise tornado.web.HTTPError(
                 403, "Only notebooks are allowed to create in cloud folders"
             )
 
@@ -709,7 +706,7 @@ class TileDBContents(ContentsManager):
                 nb_content = []
                 file_content = arr.read()
                 if file_content is not None:
-                    nb_content = reads(
+                    nb_content = nbformat.reads(
                         file_content["contents"].tostring().decode("utf-8", "backslashreplace"),
                         as_version=NBFORMAT_VERSION,
                     )
@@ -718,14 +715,14 @@ class TileDBContents(ContentsManager):
                 model["content"] = nb_content
                 self.validate_notebook_model(model)
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-                raise HTTPError(400, "Error fetching notebook info: {}".format(str(e)))
+                raise tornado.web.HTTPError(400, "Error fetching notebook info: {}".format(str(e)))
             except tiledb.TileDBError as e:
-                raise HTTPError(
+                raise tornado.web.HTTPError(
                     400,
                     "Error fetching notebook: {}".format(str(e)),
                 )
             except Exception as e:
-                raise HTTPError(
+                raise tornado.web.HTTPError(
                     400,
                     "Error fetching notebook: {}".format(str(e)),
                 )
@@ -777,7 +774,7 @@ class TileDBContents(ContentsManager):
                     and meta["type"] == "notebook"
                     and file_content is not None
                 ):
-                    nb_content = reads(
+                    nb_content = nbformat.reads(
                         file_content["contents"].tostring().decode("utf-8", "backslashreplace"),
                         as_version=NBFORMAT_VERSION,
                     )
@@ -786,14 +783,14 @@ class TileDBContents(ContentsManager):
                     model["content"] = nb_content
                     self.validate_notebook_model(model)
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-                raise HTTPError(500, "Error fetching file info: {}".format(str(e)))
+                raise tornado.web.HTTPError(500, "Error fetching file info: {}".format(str(e)))
             except tiledb.TileDBError as e:
-                raise HTTPError(
+                raise tornado.web.HTTPError(
                     500,
                     "Error fetching file: {}".format(str(e)),
                 )
             except Exception as e:
-                raise HTTPError(
+                raise tornado.web.HTTPError(
                     400,
                     "Error fetching file: {}".format(str(e)),
                 )
@@ -880,14 +877,14 @@ class TileDBContents(ContentsManager):
             if "mimetype" in meta:
                 return meta["mimetype"]
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-            raise HTTPError(500, "Error getting mimetype: {}".format(str(e)))
+            raise tornado.web.HTTPError(500, "Error getting mimetype: {}".format(str(e)))
         except tiledb.TileDBError as e:
-            raise HTTPError(
+            raise tornado.web.HTTPError(
                 500,
                 str(e),
             )
         except Exception as e:
-            raise HTTPError(
+            raise tornado.web.HTTPError(
                 400,
                 "Error getting file MIME: {}".format(str(e)),
             )
@@ -909,14 +906,14 @@ class TileDBContents(ContentsManager):
             if "type" in meta:
                 return meta["type"]
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-            raise HTTPError(500, "Error getting type: {}".format(str(e)))
+            raise tornado.web.HTTPError(500, "Error getting type: {}".format(str(e)))
         except tiledb.TileDBError as e:
-            raise HTTPError(
+            raise tornado.web.HTTPError(
                 500,
                 str(e),
             )
         except Exception as e:
-            raise HTTPError(
+            raise tornado.web.HTTPError(
                 400,
                 "Error getting file type: {}".format(str(e)),
             )
@@ -924,7 +921,7 @@ class TileDBContents(ContentsManager):
         return None
 
 
-class TileDBCheckpoints(GenericFileCheckpoints, TileDBContents, Checkpoints):
+class TileDBCheckpoints(filecheckpoints.GenericFileCheckpoints, TileDBContents, checkpoints.Checkpoints):
     """
     A wrapper of a class which will in the future support checkpoints by time traveling.
     It inherits from GenericFileCheckpoints for local notebooks
@@ -986,12 +983,12 @@ class TileDBCheckpoints(GenericFileCheckpoints, TileDBContents, Checkpoints):
             return super().rename_checkpoint(checkpoint_id, old_path, new_path)
 
 
-class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits):
+class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager, traitlets.HasTraits):
     # This makes the checkpoints get saved on this directory
-    root_dir = Unicode("./", config=True)
+    root_dir = traitlets.Unicode("./", config=True)
 
     def __init__(self, **kwargs):
-        super(FileContentsManager, self).__init__(**kwargs)
+        super(filemanager.FileContentsManager, self).__init__(**kwargs)
 
     def _checkpoints_class_default(self):
         """
@@ -1017,16 +1014,16 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 )
             arrays = array_listing[listing_key].fetch().arrays()
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-            raise HTTPError(
+            raise tornado.web.HTTPError(
                 500, "Error listing notebooks in {}: {}".format(namespace, str(e))
             )
         except tiledb.TileDBError as e:
-            raise HTTPError(
+            raise tornado.web.HTTPError(
                 500,
                 str(e),
             )
         except Exception as e:
-            raise HTTPError(
+            raise tornado.web.HTTPError(
                 400,
                 "Error listing notebooks in  {}: {}".format(namespace, str(e)),
             )
@@ -1083,16 +1080,16 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
 
             arrays = array_listing[category].arrays()
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-            raise HTTPError(
+            raise tornado.web.HTTPError(
                 500, "Error listing notebooks in {}: {}".format(category, str(e))
             )
         except tiledb.TileDBError as e:
-            raise HTTPError(
+            raise tornado.web.HTTPError(
                 500,
                 str(e),
             )
         except Exception as e:
-            raise HTTPError(
+            raise tornado.web.HTTPError(
                 400,
                 "Error listing notebooks in  {}: {}".format(category, str(e)),
             )
@@ -1131,17 +1128,17 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                         namespaces[org.organization_name] = namespace_model
 
                 except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-                    raise HTTPError(
+                    raise tornado.web.HTTPError(
                         500,
                         "Error listing notebooks in {}: {}".format(category, str(e)),
                     )
                 except tiledb.TileDBError as e:
-                    raise HTTPError(
+                    raise tornado.web.HTTPError(
                         500,
                         str(e),
                     )
                 except Exception as e:
-                    raise HTTPError(
+                    raise tornado.web.HTTPError(
                         400,
                         "Error listing notebooks in  {}: {}".format(category, str(e)),
                     )
@@ -1289,16 +1286,16 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                             ] = notebook.last_accessed.replace(tzinfo=utc)
 
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-            raise HTTPError(
+            raise tornado.web.HTTPError(
                 500, "Error building cloud notebook info: {}".format(str(e))
             )
         except tiledb.TileDBError as e:
-            raise HTTPError(
+            raise tornado.web.HTTPError(
                 500,
                 str(e),
             )
         except Exception as e:
-            raise HTTPError(
+            raise tornado.web.HTTPError(
                 500, "Error building cloud notebook info: {}".format(str(e))
             )
 
@@ -1387,7 +1384,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             elif type_ == "directory":
                 ret.append(self.__directory_model_from_path(path, False))
             else:
-                HTTPError(500, "Unknown file type %s for file '%s'" % (type_, path))
+                tornado.web.HTTPError(500, "Unknown file type %s for file '%s'" % (type_, path))
         return ret
 
     def get(self, path, content=True, type=None, format=None):
@@ -1433,7 +1430,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 # if model is not None:
                 #     model.
         except Exception as e:
-            raise HTTPError(
+            raise tornado.web.HTTPError(
                 500, "Error opening notebook {}: {}".format(path_fixed, str(e))
             )
 
@@ -1451,12 +1448,12 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
             path_fixed = "."
 
         if "type" not in model:
-            raise HTTPError(400, u"No file type provided")
+            raise tornado.web.HTTPError(400, u"No file type provided")
         if "content" not in model and model["type"] != "directory":
-            raise HTTPError(400, u"No file content provided")
+            raise tornado.web.HTTPError(400, u"No file content provided")
 
         if model["type"] not in ("directory", "file", "notebook"):
-            raise HTTPError(400, "Unhandled contents type: %s" % model["type"])
+            raise tornado.web.HTTPError(400, "Unhandled contents type: %s" % model["type"])
 
         if not self._is_remote_path(path_fixed):
             return super().save(model, path)
@@ -1487,7 +1484,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 validation_message = self._save_file_tiledb(model, path_fixed)
             else:
                 if self._is_remote_path(path_fixed):
-                    raise HTTPError(
+                    raise tornado.web.HTTPError(
                         400,
                         "Trying to create unsupported type: %s in cloud"
                         % model["type"],
@@ -1520,11 +1517,11 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                     tiledb_uri, "application/x-ipynb+json"
                 )
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-                raise HTTPError(
+                raise tornado.web.HTTPError(
                     500, f"Error deregistering {tiledb_uri!r}: {e}"
                 )
             except tiledb.TileDBError as e:
-                raise HTTPError(
+                raise tornado.web.HTTPError(
                     500,
                     str(e),
                 )
@@ -1551,9 +1548,9 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                     uri=tiledb_uri, notebook_name=array_name_new
                 )
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-                raise HTTPError(500, f"Error renaming {tiledb_uri!r}: {e}")
+                raise tornado.web.HTTPError(500, f"Error renaming {tiledb_uri!r}: {e}")
             except tiledb.TileDBError as e:
-                raise HTTPError(
+                raise tornado.web.HTTPError(
                     500,
                     str(e),
                 )
@@ -1635,7 +1632,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         """
         path = path.strip("/")
         if not self.dir_exists(path):
-            raise HTTPError(404, "No such directory: %s" % path)
+            raise tornado.web.HTTPError(404, "No such directory: %s" % path)
 
         model = {}
         if type:
@@ -1653,7 +1650,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
                 model["s3_prefix"] = options_json["s3_prefix"]
                 model["s3_credentials"] = options_json["s3_credentials"]
             except Exception as e:
-                raise HTTPError(
+                raise tornado.web.HTTPError(
                     400, u"Could not read TileDB user options: {}".format(e)
                 )
 
@@ -1671,7 +1668,7 @@ class TileDBCloudContentsManager(TileDBContents, FileContentsManager, HasTraits)
         elif model["type"] == "file":
             untitled = self.untitled_file
         else:
-            raise HTTPError(400, "Unexpected model type: %r" % model["type"])
+            raise tornado.web.HTTPError(400, "Unexpected model type: %r" % model["type"])
 
         name = self.increment_filename(untitled + ext, path, insert=insert)
         path = u"{0}/{1}".format(path, name)
