@@ -16,14 +16,17 @@ NAME = "tiledbcontents"
 # http://pypi.python.org/pypi/setuptools
 
 REQUIRES = [
+    "nbformat",
     "notebook",
-    "nose",
-    "ipykernel",
-    "setuptools>=18.0",
-    "setuptools-scm>=1.5.4",
+    "numpy",
+    "pytz",
     "setuptools-scm-git-archive",
-    "tiledb>=0.7.0",
+    "setuptools-scm>=1.5.4",
+    "setuptools>=45",
     "tiledb-cloud>=0.6.7",
+    "tiledb>=0.7.0",
+    "tornado",
+    "traitlets",
 ]
 
 setup(
