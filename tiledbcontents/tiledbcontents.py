@@ -18,6 +18,9 @@ from notebook.services.contents import filecheckpoints
 from notebook.services.contents import filemanager
 from notebook.services.contents import manager
 
+from . import caching
+
+
 DUMMY_CREATED_DATE = datetime.datetime.fromtimestamp(86400)
 NBFORMAT_VERSION = 4
 
@@ -27,160 +30,6 @@ NOTEBOOK_EXT = ".ipynb"
 
 JUPYTER_IMAGE_NAME_ENV = "JUPYTER_IMAGE_NAME"
 JUPYTER_IMAGE_SIZE_ENV = "JUPYTER_IMAGE_SIZE"
-
-TILEDB_CONTEXT = tiledb.cloud.Ctx()
-
-
-class Array:
-    """
-    Use this to control caching
-    """
-
-    def __init__(self, uri, contents=None):
-        """
-        Create an Array wrapping a TileDB Array class
-        :param uri:
-        """
-        self.uri = uri
-        try:
-            self.array = tiledb.open(uri, ctx=TILEDB_CONTEXT)
-        except Exception as e:
-            raise tornado.web.HTTPError(
-                400,
-                "Error in Array init: {}".format(str(e)),
-            )
-        self.contents_fetched = False
-        self.cached_meta = {}
-        self.cache_metadata()
-        # Cache contents if exist during first array write
-        self.cached_contents = contents
-
-    def read(self):
-        """
-        Fetch all contents of the array based on file_size metadata field
-        :return: raw bytes of content
-        """
-
-        try:
-            if self.cached_contents is not None:
-                contents = self.cached_contents
-                # Invalidate cached contents after first read
-                # Used only to speed up first read after creation, avoiding the roundtrip to the server
-                # since contents are already available
-                self.cached_contents = None
-                return contents
-
-            if self.contents_fetched:
-                self.reopen()
-
-            self.contents_fetched = True
-            meta = self.array.meta
-            if "file_size" in meta:
-                return self.array[slice(0, meta["file_size"])]
-        except Exception as e:
-            raise tornado.web.HTTPError(
-                400,
-                "Error in Array::read: {}".format(str(e)),
-            )
-
-        return None
-
-    def reopen(self):
-        """
-        Reopen an array at the current timestamp
-        :return:
-        """
-        try:
-            if self.array is not None:
-                self.array.close()
-
-            self.array = tiledb.open(self.uri, ctx=TILEDB_CONTEXT)
-        except Exception as e:
-            raise tornado.web.HTTPError(
-                400,
-                "Error in Array::reopen: {}".format(str(e)),
-            )
-
-    def cache_metadata(self):
-        try:
-            for k, v in self.array.meta.items():
-                self.cached_meta[k] = v
-        except Exception as e:
-            raise tornado.web.HTTPError(
-                400,
-                "Error in Array::cache_metadata: {}".format(str(e)),
-            )
-
-
-# The amount of time that an ArrayListing will be cached.
-_CACHE_SECS = 4
-
-
-class ArrayListing:
-    """
-    Use this to control caching
-    """
-
-    def __init__(self, category, namespace=None):
-        """
-        Create an ArrayListing which will cache results for specified time
-        :param category: category to list
-        :param namespace: namespace to filter to
-        """
-        self.category = category
-        self.namespace = namespace
-        self.array_listing_future = None
-        self.last_fetched = None
-
-    def __should_fetch(self):
-        return (
-            self.last_fetched is None
-            or self.array_listing_future is None
-            or self.last_fetched + _CACHE_SECS < time.time()
-        )
-
-    def fetch(self):
-        if self.__should_fetch():
-            if self.category == "owned":
-                self.array_listing_future = tiledb.cloud.client.list_arrays(
-                    file_type=[tiledb.cloud.rest_api.models.FileType.NOTEBOOK],
-                    namespace=self.namespace,
-                    async_req=True,
-                )
-            elif self.category == "shared":
-                self.array_listing_future = tiledb.cloud.client.list_shared_arrays(
-                    file_type=[tiledb.cloud.rest_api.models.FileType.NOTEBOOK],
-                    namespace=self.namespace,
-                    async_req=True,
-                )
-            elif self.category == "public":
-                self.array_listing_future = tiledb.cloud.client.list_public_arrays(
-                    file_type=[tiledb.cloud.rest_api.models.FileType.NOTEBOOK],
-                    namespace=self.namespace,
-                    async_req=True,
-                )
-            self.last_fetched = time.time()
-
-        return self
-
-    def get(self):
-        if self.array_listing_future is None:
-            self.fetch()
-
-        return self.array_listing_future.get()
-
-    def arrays(self):
-        ret = self.get()
-        if ret is not None:
-            return ret.arrays
-        return None
-
-
-# global mapping of array listings used for caching
-array_listing = {}
-
-# global mapping of arrays used for caching type and schema
-arrays = {}
 
 
 def get_cloud_enabled():
@@ -439,8 +288,8 @@ class TileDBContents(manager.ContentsManager):
             namespace = parts[parts_len - 2]
             array_name = parts[parts_len - 1] + "_" + self.id_generator()
 
-            # Initialize context
-            tiledb_create_context = TILEDB_CONTEXT
+            # Use the general cloud context by default.
+            tiledb_create_context = caching.CLOUD_CONTEXT
 
             if s3_credentials is None:
                 s3_credentials = get_s3_credentials(namespace)
@@ -637,7 +486,7 @@ class TileDBContents(manager.ContentsManager):
                 tiledb_uri, 5, s3_prefix, s3_credentials, is_user_defined_name
             )
 
-        with tiledb.open(tiledb_uri, mode="w", ctx=TILEDB_CONTEXT) as A:
+        with tiledb.open(tiledb_uri, mode="w", ctx=caching.CLOUD_CONTEXT) as A:
             A[0 : len(contents)] = {"contents": contents}
             A.meta["file_size"] = len(contents)
             if mimetype is not None:
@@ -647,8 +496,7 @@ class TileDBContents(manager.ContentsManager):
             if type is not None:
                 A.meta["type"] = type
 
-        if tiledb_uri not in arrays:
-            arrays[tiledb_uri] = Array(tiledb_uri, {"contents": contents})
+        caching.Array.from_cache(tiledb_uri, {"contents": contents})
 
         return final_array_name
 
@@ -681,10 +529,7 @@ class TileDBContents(manager.ContentsManager):
                 if "write" not in info.allowed_actions:
                     model["writable"] = False
 
-                if tiledb_uri not in arrays:
-                    arrays[tiledb_uri] = Array(tiledb_uri)
-
-                arr = arrays[tiledb_uri]
+                arr = caching.Array.from_cache(tiledb_uri)
 
                 nb_content = []
                 file_content = arr.read()
@@ -727,10 +572,7 @@ class TileDBContents(manager.ContentsManager):
                 if "write" not in info.allowed_actions:
                     model["writable"] = False
 
-                if tiledb_uri not in arrays:
-                    arrays[tiledb_uri] = Array(tiledb_uri)
-
-                arr = arrays[tiledb_uri]
+                arr = caching.Array.from_cache(tiledb_uri)
 
                 # Use cached meta, only file_size is ever updated
                 meta = arr.cached_meta
@@ -852,10 +694,7 @@ class TileDBContents(manager.ContentsManager):
         :return:
         """
         try:
-            if uri not in arrays:
-                arrays[uri] = Array(uri)
-
-            arr = arrays[uri]
+            arr = caching.Array.from_cache(uri)
             meta = arr.cached_meta
             if "mimetype" in meta:
                 return meta["mimetype"]
@@ -881,10 +720,7 @@ class TileDBContents(manager.ContentsManager):
         :return:
         """
         try:
-            if uri not in arrays:
-                arrays[uri] = Array(uri)
-
-            arr = arrays[uri]
+            arr = caching.Array.from_cache(uri)
             meta = arr.cached_meta
             if "type" in meta:
                 return meta["type"]
@@ -990,12 +826,8 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         """
         arrays = []
         try:
-            listing_key = "{}/{}".format(category, namespace)
-            if listing_key not in array_listing:
-                array_listing[listing_key] = ArrayListing(
-                    category=category, namespace=namespace
-                )
-            arrays = array_listing[listing_key].fetch().arrays()
+            listing = caching.ArrayListing.from_cache(category, namespace)
+            arrays = listing.arrays()
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
             raise tornado.web.HTTPError(
                 500, "Error listing notebooks in {}: {}".format(namespace, str(e))
@@ -1051,10 +883,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         """
         arrays = []
         try:
-            if category not in array_listing:
-                array_listing[category] = ArrayListing(category=category)
-
-            arrays = array_listing[category].arrays()
+            arrays = caching.ArrayListing.from_cache(category).arrays()
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
             raise tornado.web.HTTPError(
                 500, "Error listing notebooks in {}: {}".format(category, str(e))
@@ -1154,25 +983,17 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         }
         try:
 
-            if "owned" not in array_listing:
-                array_listing["owned"] = ArrayListing(category="owned")
-            array_listing["owned"].fetch()
-
-            if "public" not in array_listing:
-                array_listing["public"] = ArrayListing(category="public")
-            array_listing["public"].fetch()
-
-            if "shared" not in array_listing:
-                array_listing["shared"] = ArrayListing(category="shared")
-            array_listing["shared"].fetch()
+            owned_listing = caching.ArrayListing.from_cache("owned")
+            shared_listing = caching.ArrayListing.from_cache("shared")
+            public_listing = caching.ArrayListing.from_cache("public")
 
             ret["owned"]["path"] = "cloud/owned"
             ret["public"]["path"] = "cloud/public"
             ret["shared"]["path"] = "cloud/shared"
 
-            owned_notebooks = array_listing["owned"].arrays()
-            shared_notebooks = array_listing["shared"].arrays()
-            public_notebooks = array_listing["public"].arrays()
+            owned_notebooks = owned_listing.arrays()
+            shared_notebooks = shared_listing.arrays()
+            public_notebooks = public_listing.arrays()
             if owned_notebooks is not None:
                 if len(owned_notebooks) > 0:
                     ret["owned"]["format"] = "json"
@@ -1453,8 +1274,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
 
             tiledb_uri = self.tiledb_uri_from_path(path_fixed)
             try:
-                if tiledb_uri in arrays:
-                    del arrays[tiledb_uri]
+                caching.Array.purge(tiledb_uri)
                 return tiledb.cloud.array.delete_array(
                     tiledb_uri, "application/x-ipynb+json"
                 )
@@ -1484,8 +1304,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
             array_name_new = parts_new[parts_new_length - 1]
 
             try:
-                if tiledb_uri in arrays:
-                    del arrays[tiledb_uri]
+                caching.Array.purge(tiledb_uri)
                 return tiledb.cloud.notebook.rename_notebook(
                     uri=tiledb_uri, notebook_name=array_name_new
                 )
