@@ -5,10 +5,10 @@ import os
 import random
 import string
 import time
+from typing import Any, Dict
 
 import nbformat
 import numpy
-import pytz
 import tiledb
 import tiledb.cloud
 import tornado.web
@@ -17,8 +17,6 @@ from notebook.services.contents import checkpoints
 from notebook.services.contents import filecheckpoints
 from notebook.services.contents import filemanager
 from notebook.services.contents import manager
-
-utc = pytz.UTC
 
 DUMMY_CREATED_DATE = datetime.datetime.fromtimestamp(86400)
 NBFORMAT_VERSION = 4
@@ -114,30 +112,31 @@ class Array:
             )
 
 
+# The amount of time that an ArrayListing will be cached.
+_CACHE_SECS = 4
+
+
 class ArrayListing:
     """
     Use this to control caching
     """
 
-    def __init__(self, category, namespace=None, cache_secs=4):
+    def __init__(self, category, namespace=None):
         """
         Create an ArrayListing which will cache results for specified time
         :param category: category to list
         :param namespace: namespace to filter to
-        :param cache_secs: cache time, defaults to 4 seconds
         """
         self.category = category
         self.namespace = namespace
         self.array_listing_future = None
         self.last_fetched = None
-        self.cache_secs = cache_secs
 
     def __should_fetch(self):
         return (
             self.last_fetched is None
             or self.array_listing_future is None
-            or self.last_fetched + datetime.timedelta(0, self.cache_secs)
-            < datetime.datetime.now(tz=pytz.UTC)
+            or self.last_fetched + _CACHE_SECS < time.time()
         )
 
     def fetch(self):
@@ -160,7 +159,7 @@ class ArrayListing:
                     namespace=self.namespace,
                     async_req=True,
                 )
-            self.last_fetched = datetime.datetime.now(tz=pytz.UTC)
+            self.last_fetched = time.time()
 
         return self
 
@@ -678,7 +677,7 @@ class TileDBContents(manager.ContentsManager):
             tiledb_uri = self.tiledb_uri_from_path(uri)
             try:
                 info = tiledb.cloud.array.info(tiledb_uri)
-                model["last_modified"] = info.last_accessed.replace(tzinfo=utc)
+                model["last_modified"] = _to_utc(info.last_accessed)
                 if "write" not in info.allowed_actions:
                     model["writable"] = False
 
@@ -724,7 +723,7 @@ class TileDBContents(manager.ContentsManager):
             tiledb_uri = self.tiledb_uri_from_path(uri)
             try:
                 info = tiledb.cloud.array.info(tiledb_uri)
-                model["last_modified"] = info.last_accessed.replace(tzinfo=utc)
+                model["last_modified"] = _to_utc(info.last_accessed)
                 if "write" not in info.allowed_actions:
                     model["writable"] = False
 
@@ -1027,17 +1026,10 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                     nbmodel["path"] = "cloud/{}/{}/{}{}".format(
                         category, namespace, nbmodel["path"], NOTEBOOK_EXT
                     )
-                    nbmodel["last_modified"] = notebook.last_accessed.replace(
-                        tzinfo=utc
-                    )
 
+                    nbmodel["last_modified"] = _to_utc(notebook.last_accessed)
                     # Update namespace directory based on last access notebook
-                    if model["last_modified"].replace(
-                        tzinfo=utc
-                    ) < notebook.last_accessed.replace(tzinfo=utc):
-                        model["last_modified"] = notebook.last_accessed.replace(
-                            tzinfo=utc
-                        )
+                    _maybe_update_last_modified(model, notebook)
 
                     nbmodel["type"] = "notebook"
 
@@ -1140,20 +1132,10 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                         namespaces[notebook.namespace] = namespace_model
 
                     # Update directory based on last access notebook
-                    if model["last_modified"].replace(
-                        tzinfo=utc
-                    ) < notebook.last_accessed.replace(tzinfo=utc):
-                        model["last_modified"] = notebook.last_accessed.replace(
-                            tzinfo=utc
-                        )
+                    _maybe_update_last_modified(model, notebook)
 
                     # Update namespace directory based on last access notebook
-                    if namespaces[notebook.namespace]["last_modified"].replace(
-                        tzinfo=utc
-                    ) < notebook.last_accessed.replace(tzinfo=utc):
-                        namespaces[notebook.namespace][
-                            "last_modified"
-                        ] = notebook.last_accessed.replace(tzinfo=utc)
+                    _maybe_update_last_modified(namespaces[notebook.namespace], notebook)
 
             model["content"] = list(namespaces.values())
 
@@ -1199,9 +1181,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                         model = base_model(notebook.name)
                         model["type"] = "notebook"
                         model["format"] = "json"
-                        model["last_modified"] = notebook.last_accessed.replace(
-                            tzinfo=utc
-                        )
+                        model["last_modified"] = _to_utc(notebook.last_accessed)
                         # Add notebook extension to path, so jupyterlab will open with as a notebook
                         # It seems to check the extension even though we set the "type" parameter
                         model["path"] = "cloud/{}/{}{}".format(
@@ -1210,12 +1190,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                         ret["owned"]["content"].append(model)
 
                         # Update category date
-                        if ret["owned"]["last_modified"].replace(
-                            tzinfo=utc
-                        ) < notebook.last_accessed.replace(tzinfo=utc):
-                            ret["owned"][
-                                "last_modified"
-                            ] = notebook.last_accessed.replace(tzinfo=utc)
+                        _maybe_update_last_modified(ret["owned"], notebook)
 
             if shared_notebooks is not None:
                 if len(shared_notebooks) > 0:
@@ -1225,9 +1200,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                         model = base_model(notebook.name)
                         model["type"] = "notebook"
                         model["format"] = "json"
-                        model["last_modified"] = notebook.last_accessed.replace(
-                            tzinfo=utc
-                        )
+                        model["last_modified"] = _to_utc(notebook.last_accessed)
                         # Add notebook extension to path, so jupyterlab will open with as a notebook
                         # It seems to check the extension even though we set the "type" parameter
                         model["path"] = "cloud/{}/{}{}".format(
@@ -1236,12 +1209,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                         ret["shared"]["content"].append(model)
 
                         # Update category date
-                        if ret["shared"]["last_modified"].replace(
-                            tzinfo=utc
-                        ) < notebook.last_accessed.replace(tzinfo=utc):
-                            ret["shared"][
-                                "last_modified"
-                            ] = notebook.last_accessed.replace(tzinfo=utc)
+                        _maybe_update_last_modified(ret["shared"], notebook)
 
             if public_notebooks is not None:
                 if len(public_notebooks) > 0:
@@ -1251,9 +1219,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                         model = base_model(notebook.name)
                         model["type"] = "notebook"
                         model["format"] = "json"
-                        model["last_modified"] = notebook.last_accessed.replace(
-                            tzinfo=utc
-                        )
+                        model["last_modified"] = _to_utc(notebook.last_accessed)
                         # Add notebook extension to path, so jupyterlab will open with as a notebook
                         # It seems to check the extension even though we set the "type" parameter
                         model["path"] = "cloud/{}/{}{}".format(
@@ -1262,12 +1228,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                         ret["public"]["content"].append(model)
 
                         # Update category date
-                        if ret["public"]["last_modified"].replace(
-                            tzinfo=utc
-                        ) < notebook.last_accessed.replace(tzinfo=utc):
-                            ret["public"][
-                                "last_modified"
-                            ] = notebook.last_accessed.replace(tzinfo=utc)
+                        _maybe_update_last_modified(ret["public"], notebook)
 
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
             raise tornado.web.HTTPError(
@@ -1330,11 +1291,8 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                 cloud["format"] = "json"
                 cloud["content"] = self.__build_cloud_notebook_lists()
 
-                for category in cloud["content"]:
-                    if category["last_modified"].replace(tzinfo=utc) > cloud[
-                        "last_modified"
-                    ].replace(tzinfo=utc):
-                        cloud["last_modified"] = category["last_modified"]
+                cloud["last_modified"] = max(
+                    _to_utc(cat["last_modified"]) for cat in cloud["content"])
 
             model = cloud
         else:
@@ -1385,14 +1343,9 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                     cloud = base_directory_model("cloud")
                     cloud["content"] = self.__build_cloud_notebook_lists()
                     cloud["format"] = "json"
+                    cloud["last_modified"] = max(
+                        _to_utc(cat["last_modified"]) for cat in cloud["content"])
                     model["content"].append(cloud)
-
-                    for cloud_content in cloud["content"]:
-                        # Update cloud directory based on last access child directory
-                        if cloud["last_modified"].replace(tzinfo=utc) < cloud_content[
-                            "last_modified"
-                        ].replace(tzinfo=utc):
-                            cloud["last_modified"] = cloud_content["last_modified"]
 
                 return model
 
@@ -1693,3 +1646,20 @@ def _try_convert_file_to_notebook(model):
         mimetype=None,
         content=nb,
     )
+
+
+def _to_utc(d: datetime.datetime) -> datetime.datetime:
+    """Returns a version of d converted to UTC.
+
+    If naive (no timezone), UTC will be added; if timezone-aware, the time
+    will be converted.
+    """
+    if not d.tzinfo:
+        return d.replace(tzinfo=datetime.timezone.utc)
+    return d.astimezone(datetime.timezone.utc)
+
+
+def _maybe_update_last_modified(model: Dict[str, Any], notebook: Any) -> None:
+    nb_last_acc = _to_utc(notebook.last_accessed)
+    md_last_mod = _to_utc(model["last_modified"])
+    model["last_modified"] = max(nb_last_acc, md_last_mod)

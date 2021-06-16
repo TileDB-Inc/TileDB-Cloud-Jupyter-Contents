@@ -19,7 +19,6 @@ REQUIRES = [
     "nbformat",
     "notebook",
     "numpy",
-    "pytz",
     "setuptools-scm-git-archive",
     "setuptools-scm>=1.5.4",
     "setuptools>=45",
