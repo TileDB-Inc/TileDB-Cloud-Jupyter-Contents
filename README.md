@@ -67,7 +67,7 @@ The only remaining step is to launch Jupyter and configure it to use the
 `TileDBCloudContentsManager` class:
 
 ```
-$ jupyter notebook --NotebookApp.contents_manager_class=tiledbcontents.TileDBContentsManager
+$ jupyter notebook --NotebookApp.contents_manager_class=tiledbcontents.TileDBCloudContentsManager
 ```
 
 This will run a local test Jupyter notebook server without changing your default
