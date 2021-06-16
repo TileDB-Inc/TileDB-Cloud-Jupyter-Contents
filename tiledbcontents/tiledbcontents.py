@@ -1127,29 +1127,6 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
 
         return model
 
-    def __group_to_models(self, path_prefix, paths):
-        """
-        Applies _notebook_model_from_s3_path or _file_model_from_s3_path to each entry of `paths`,
-        depending on the result of `guess_type`.
-        """
-        ret = []
-        for path in paths:
-            # path = remove_path_prefix("file://" + os.getcwd() + "/", path)
-            # path_after = remove_path_prefix(path_prefix, path)
-            # path = path_after
-            # if os.path.basename(path) == self.dir_keep_file:
-            #      continue
-            type_ = self.guess_type(path, allow_directory=True)
-            if type_ == "notebook":
-                ret.append(self._notebook_from_array(path, False))
-            elif type_ == "file":
-                ret.append(self._file_from_array(path, False, None))
-            elif type_ == "directory":
-                ret.append(self.__directory_model_from_path(path, False))
-            else:
-                tornado.web.HTTPError(500, "Unknown file type %s for file '%s'" % (type_, path))
-        return ret
-
     def get(self, path, content=True, type=None, format=None):
         """Get a file or directory model."""
         path_fixed = path.strip("/")
