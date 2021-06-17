@@ -20,7 +20,8 @@ from . import caching
 from . import paths
 
 
-DUMMY_CREATED_DATE = datetime.datetime.fromtimestamp(86400)
+_DUMMY_DATE = datetime.datetime.fromtimestamp(0, tzinfo=datetime.timezone.utc)
+
 NBFORMAT_VERSION = 4
 
 NOTEBOOK_MIME = "application/x-ipynb+json"
@@ -43,37 +44,6 @@ def get_cloud_enabled():
         )
 
     return False
-
-
-def base_model(path):
-    """
-    Taken from https://github.com/danielfrg/s3contents/blob/master/s3contents/genericmanager.py
-    :return:
-    """
-    return {
-        "name": posixpath.basename(path),
-        "path": path,
-        "writable": True,
-        "last_modified": DUMMY_CREATED_DATE,
-        "created": DUMMY_CREATED_DATE,
-        "content": None,
-        "format": None,
-        "mimetype": None,
-    }
-
-
-def base_directory_model(path):
-    """
-    Taken from https://github.com/danielfrg/s3contents/blob/master/s3contents/genericmanager.py
-    :return:
-    """
-    model = base_model(path)
-    model.update(
-        type="directory",
-        last_modified=DUMMY_CREATED_DATE,
-        created=DUMMY_CREATED_DATE,
-    )
-    return model
 
 
 class TileDBContents(manager.ContentsManager):
@@ -101,7 +71,7 @@ class TileDBContents(manager.ContentsManager):
             s3_prefix=model.get("s3_prefix", None),
             s3_credentials=model.get("s3_credentials", None),
             is_user_defined_name="name" in model,
-            is_new=is_new
+            is_new=is_new,
         )
 
         self.validate_notebook_model(model)
@@ -111,9 +81,7 @@ class TileDBContents(manager.ContentsManager):
         """
         Build a notebook model from database record.
         """
-        model = base_model(path)
-
-        model["type"] = "notebook"
+        model = _base_model(path=path, type="notebook")
         if content:
             tiledb_uri = paths.tiledb_uri_from_path(path)
             try:
@@ -154,8 +122,7 @@ class TileDBContents(manager.ContentsManager):
         """
         Build a notebook model from database record.
         """
-        model = base_model(path)
-        model["type"] = "file"
+        model = _base_model(path=path, type="file")
 
         if content:
             tiledb_uri = paths.tiledb_uri_from_path(path)
@@ -254,25 +221,25 @@ class TileDBCheckpoints(filecheckpoints.GenericFileCheckpoints, TileDBContents, 
     It inherits from GenericFileCheckpoints for local notebooks
     """
 
-    def _tiledb_checkpoint_model(self):
-        return dict(
-            id="checkpoints-not-supported",
-            last_modified=DUMMY_CREATED_DATE,
-        )
+    # Immutable version of the only model we return ourselves.
+    _BASE_MODEL = (
+        ("id", "checkpoints-not-supported"),
+        ("last_modified", "models._DUMMY_DATE"),
+    )
 
     def create_file_checkpoint(self, content, format, path):
         """ -> checkpoint model"""
         if not paths.is_remote(path):
             return super().create_file_checkpoint(content, format, path)
 
-        return self._tiledb_checkpoint_model()
+        return dict(self._BASE_MODEL)
 
     def create_notebook_checkpoint(self, nb, path):
         """ -> checkpoint model"""
         if not paths.is_remote(path):
             return super().create_notebook_checkpoint(nb, path)
 
-        return self._tiledb_checkpoint_model()
+        return dict(self._BASE_MODEL)
 
     def get_file_checkpoint(self, checkpoint_id, path):
         """ -> {'type': 'file', 'content': <str>, 'format': {'text', 'base64'}}"""
@@ -345,15 +312,17 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                 "Error listing notebooks in  {}: {}".format(namespace, str(e)),
             )
 
-        model = base_directory_model(namespace)
-        model["path"] = "cloud/{}/{}".format(category, namespace)
+        model = _base_model(
+            path=paths.join("cloud", category, namespace),
+            type="directory",
+        )
         if content:
             # Build model content if asked for
             model["format"] = "json"
             model["content"] = []
             if arrays is not None:
                 for notebook in arrays:
-                    nbmodel = base_model(notebook.name)
+                    nbmodel = _base_model(path=notebook.name)
 
                     # Add notebook extension to name, so jupyterlab will open with as a notebook
                     # It seems to check the extension even though we set the "type" parameter
@@ -401,8 +370,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                 "Error listing notebooks in  {}: {}".format(category, str(e)),
             )
 
-        model = base_directory_model(category)
-        model["path"] = "cloud/{}".format(category)
+        model = _base_model(path=paths.join("cloud", category), type="directory")
         if content:
             model["format"] = "json"
             model["content"] = []
@@ -414,10 +382,10 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                 # notebooks in any of the namespaces they are part of.
                 try:
                     profile = tiledb.cloud.client.user_profile()
-                    namespace_model = base_directory_model(profile.username)
-                    namespace_model["format"] = "json"
-                    namespace_model["path"] = "cloud/{}/{}".format(
-                        category, profile.username
+                    namespace_model = _base_model(
+                        path=paths.join("cloud", category, profile.username),
+                        type="directory",
+                        format="json",
                     )
                     namespaces[profile.username] = namespace_model
 
@@ -426,10 +394,10 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                         if org.organization_name == "public":
                             continue
 
-                        namespace_model = base_directory_model(org.organization_name)
-                        namespace_model["format"] = "json"
-                        namespace_model["path"] = "cloud/{}/{}".format(
-                            category, org.organization_name
+                        namespace_model = _base_model(
+                            path=paths.join("cloud", category, org.organization_name),
+                            type="directory",
+                            format="json",
                         )
 
                         namespaces[org.organization_name] = namespace_model
@@ -454,11 +422,11 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
             if arrays is not None:
                 for notebook in arrays:
                     if notebook.namespace not in namespaces:
-                        namespace_model = base_directory_model(notebook.namespace)
-                        namespace_model["format"] = "json"
-                        namespace_model["writable"] = False
-                        namespace_model["path"] = "cloud/{}/{}".format(
-                            category, notebook.namespace
+                        namespace_model = _base_model(
+                            path=paths.join("cloud", category, notebook.namespace),
+                            type="directory",
+                            format="json",
+                            writable=False,
                         )
                         namespaces[notebook.namespace] = namespace_model
 
@@ -479,9 +447,9 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         """
 
         ret = {
-            "owned": base_directory_model("owned"),
-            "shared": base_directory_model("shared"),
-            "public": base_directory_model("public"),
+            "owned": _base_model(path="owned", type="directory"),
+            "shared": _base_model(path="shared", type="directory"),
+            "public": _base_model(path="public", type="directory"),
         }
         try:
 
@@ -501,10 +469,12 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                     ret["owned"]["format"] = "json"
                     ret["owned"]["content"] = []
                     for notebook in owned_notebooks:
-                        model = base_model(notebook.name)
-                        model["type"] = "notebook"
-                        model["format"] = "json"
-                        model["last_modified"] = _to_utc(notebook.last_accessed)
+                        model = _base_model(
+                            path=notebook.name,
+                            type="notebook",
+                            format="json",
+                            last_modified=_to_utc(notebook.last_accessed),
+                        )
                         # Add notebook extension to path, so jupyterlab will open with as a notebook
                         # It seems to check the extension even though we set the "type" parameter
                         model["path"] = "cloud/{}/{}{}".format(
@@ -520,10 +490,12 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                     ret["shared"]["format"] = "json"
                     ret["shared"]["content"] = []
                     for notebook in shared_notebooks:
-                        model = base_model(notebook.name)
-                        model["type"] = "notebook"
-                        model["format"] = "json"
-                        model["last_modified"] = _to_utc(notebook.last_accessed)
+                        model = _base_model(
+                            path=notebook.name,
+                            type="notebook",
+                            format="json",
+                            last_modified=_to_utc(notebook.last_accessed),
+                        )
                         # Add notebook extension to path, so jupyterlab will open with as a notebook
                         # It seems to check the extension even though we set the "type" parameter
                         model["path"] = "cloud/{}/{}{}".format(
@@ -539,10 +511,12 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                     ret["public"]["format"] = "json"
                     ret["public"]["content"] = []
                     for notebook in public_notebooks:
-                        model = base_model(notebook.name)
-                        model["type"] = "notebook"
-                        model["format"] = "json"
-                        model["last_modified"] = _to_utc(notebook.last_accessed)
+                        model = _base_model(
+                            path=notebook.name,
+                            type="notebook",
+                            format="json",
+                            last_modified=_to_utc(notebook.last_accessed),
+                        )
                         # Add notebook extension to path, so jupyterlab will open with as a notebook
                         # It seems to check the extension even though we set the "type" parameter
                         model["path"] = "cloud/{}/{}{}".format(
@@ -573,13 +547,17 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         # if self.vfs.is_dir(path):
         #     lstat = self.fs.lstat(path)
         #     if "ST_MTIME" in lstat and lstat["ST_MTIME"]:
-        model = base_directory_model(path)
-        model["last_modified"] = model["created"] = DUMMY_CREATED_DATE
+        model = _base_model(
+            path=path,
+            type="directory",
+            last_modified=_DUMMY_DATE,
+            created=_DUMMY_DATE,
+        )
         if not paths.is_remote(path) and not paths.is_remote_dir(path):
             return super()._dir_model(path, content)
 
         if path == "cloud":
-            cloud = base_directory_model("cloud")
+            cloud = _base_model(path="cloud", type="directory")
             if content:
                 cloud["format"] = "json"
                 cloud["content"] = self.__build_cloud_notebook_lists()
@@ -606,12 +584,18 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
             if not paths.is_remote(path):
                 model = super().get(path, content, type, format)
                 if path == "" and content and get_cloud_enabled():
-                    cloud = base_directory_model("cloud")
-                    cloud["content"] = self.__build_cloud_notebook_lists()
-                    cloud["format"] = "json"
-                    cloud["last_modified"] = max(
-                        _to_utc(cat["last_modified"]) for cat in cloud["content"])
-                    model["content"].append(cloud)
+                    cloud_content = self.__build_cloud_notebook_lists()
+                    model["content"].append(
+                        _base_model(
+                            path="cloud",
+                            type="directory",
+                            content=content,
+                            format="json",
+                            last_modified=max(
+                                _to_utc(cat["last_modified"]) for cat in cloud_content
+                            ),
+                        )
+                    )
 
                 return model
 
@@ -921,3 +905,20 @@ def _maybe_update_last_modified(model: Dict[str, Any], notebook: Any) -> None:
     nb_last_acc = _to_utc(notebook.last_accessed)
     md_last_mod = _to_utc(model["last_modified"])
     model["last_modified"] = max(nb_last_acc, md_last_mod)
+
+
+def _base_model(*, path: str, **kwargs) -> Dict[str, Any]:
+    """Create the most basic model."""
+    # Originally from:
+    # https://github.com/danielfrg/s3contents/blob/master/s3contents/genericmanager.py
+    model = {
+        "name": posixpath.basename(path),
+        "path": path,
+        "writable": True,
+        "last_modified": _DUMMY_DATE,
+        "created": _DUMMY_DATE,
+        "content": None,
+        "format": None,
+        "mimetype": None,
+    }
+    model.update(**kwargs)
