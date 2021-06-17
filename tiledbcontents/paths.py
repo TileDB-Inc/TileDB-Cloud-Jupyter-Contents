@@ -1,9 +1,10 @@
 """Tools for dealing with paths (and ancillary things like credentials)."""
 
 
+import posixpath
 import random
 import string
-from typing import Optional
+from typing import List, Optional
 
 
 NOTEBOOK_EXT = ".ipynb"
@@ -17,7 +18,7 @@ def tiledb_uri_from_path(path: str) -> str:
     'tiledb://namespace/nbname'
     """
 
-    parts = path.split("/")
+    parts = split(path)
     return f"tiledb://{parts[-2]}/{parts[-1]}"
 
 
@@ -67,7 +68,7 @@ def is_remote(path: str) -> bool:
     >>> is_remote("my/home/directory")
     False
     """
-    return path.split("/")[0] == "cloud"
+    return split(path)[0] == "cloud"
 
 
 def is_remote_dir(path: str) -> bool:
@@ -82,7 +83,7 @@ def is_remote_dir(path: str) -> bool:
     >>> is_remote_dir("cloud/shared/too/many/slashes")
     False
     """
-    splits = path.split("/")
+    splits = split(path)
     if splits[0] != "cloud":
         return False
     if len(splits) == 1:
@@ -112,7 +113,7 @@ def extract_category(path: str) -> Optional[str]:
     >>> extract_category("local/path/to/array")
     >>> extract_category("cloud")
     """
-    parts = path.split("/")
+    parts = split(path)
     if parts[0] != "cloud":
         return None
     try:
@@ -129,10 +130,45 @@ def extract_namespace(path: str) -> Optional[str]:
     >>> extract_namespace("local/path/to/array")
     >>> extract_namespace("cloud/owned")
     """
-    parts = path.split("/")
+    parts = split(path)
     if parts[0] != "cloud":
         return None
     try:
         return parts[2]
     except IndexError:
         return None
+
+
+RESERVED_NAMES = frozenset(["cloud", "owned", "public", "shared"])
+
+
+# Jupyter and URL-style path joining is literally just posixpath.join.
+join = posixpath.join
+
+
+def split(path: str) -> List[str]:
+    """Splits a path into its component parts.
+
+    >>> split("a/b/c")
+    ['a', 'b', 'c']
+    >>> split("")
+    ['']
+    """
+    return path.split(posixpath.sep)
+
+
+def strip(path: str) -> str:
+    """Removes leading and trailing slashes from a path.
+
+    Jupyter claims to do this already, but these are lies.
+
+    https://jupyter-notebook.readthedocs.io/en/stable/extending/contents.html#apipaths
+
+    >>> strip("/path/to/it")
+    'path/to/it'
+    >>> strip("////so many////")
+    'so many'
+    >>> strip("nothing")
+    'nothing'
+    """
+    return path.strip(posixpath.sep)
