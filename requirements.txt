@@ -9,6 +9,7 @@ cloudpickle==1.4.1
 decorator==4.4.2
 defusedxml==0.7.1
 entrypoints==0.3
+importlib-metadata==4.5.0
 ipykernel==5.5.5
 ipython==7.24.1
 ipython-genutils==0.2.0
@@ -53,14 +54,16 @@ Send2Trash==1.5.0
 setuptools-scm==6.0.1
 setuptools-scm-git-archive==1.1
 six==1.16.0
-terminado==0.10.0
+terminado==0.10.1
 testpath==0.5.0
-tiledb==0.8.11
+tiledb==0.9.0
 tiledb-cloud==0.7.11
 tiledb-plot-widget==0.1.9
 tornado==6.1
 traitlets==5.0.5
+typing-extensions==3.10.0.0
 urllib3==1.26.5
 wcwidth==0.2.5
 webencodings==0.5.1
 widgetsnbextension==3.5.1
+zipp==3.4.1

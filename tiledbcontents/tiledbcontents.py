@@ -2,13 +2,11 @@ import base64
 import datetime
 import json
 import os
-import random
-import string
 import time
+from typing import Any, Dict
 
 import nbformat
 import numpy
-import pytz
 import tiledb
 import tiledb.cloud
 import tornado.web
@@ -18,170 +16,17 @@ from notebook.services.contents import filecheckpoints
 from notebook.services.contents import filemanager
 from notebook.services.contents import manager
 
-utc = pytz.UTC
+from . import caching
+from . import paths
+
 
 DUMMY_CREATED_DATE = datetime.datetime.fromtimestamp(86400)
 NBFORMAT_VERSION = 4
 
 NOTEBOOK_MIME = "application/x-ipynb+json"
 
-NOTEBOOK_EXT = ".ipynb"
-
 JUPYTER_IMAGE_NAME_ENV = "JUPYTER_IMAGE_NAME"
 JUPYTER_IMAGE_SIZE_ENV = "JUPYTER_IMAGE_SIZE"
-
-TILEDB_CONTEXT = tiledb.cloud.Ctx()
-
-
-class Array:
-    """
-    Use this to control caching
-    """
-
-    def __init__(self, uri, contents=None):
-        """
-        Create an Array wrapping a TileDB Array class
-        :param uri:
-        """
-        self.uri = uri
-        try:
-            self.array = tiledb.open(uri, ctx=TILEDB_CONTEXT)
-        except Exception as e:
-            raise tornado.web.HTTPError(
-                400,
-                "Error in Array init: {}".format(str(e)),
-            )
-        self.contents_fetched = False
-        self.cached_meta = {}
-        self.cache_metadata()
-        # Cache contents if exist during first array write
-        self.cached_contents = contents
-
-    def read(self):
-        """
-        Fetch all contents of the array based on file_size metadata field
-        :return: raw bytes of content
-        """
-
-        try:
-            if self.cached_contents is not None:
-                contents = self.cached_contents
-                # Invalidate cached contents after first read
-                # Used only to speed up first read after creation, avoiding the roundtrip to the server
-                # since contents are already available
-                self.cached_contents = None
-                return contents
-
-            if self.contents_fetched:
-                self.reopen()
-
-            self.contents_fetched = True
-            meta = self.array.meta
-            if "file_size" in meta:
-                return self.array[slice(0, meta["file_size"])]
-        except Exception as e:
-            raise tornado.web.HTTPError(
-                400,
-                "Error in Array::read: {}".format(str(e)),
-            )
-
-        return None
-
-    def reopen(self):
-        """
-        Reopen an array at the current timestamp
-        :return:
-        """
-        try:
-            if self.array is not None:
-                self.array.close()
-
-            self.array = tiledb.open(self.uri, ctx=TILEDB_CONTEXT)
-        except Exception as e:
-            raise tornado.web.HTTPError(
-                400,
-                "Error in Array::reopen: {}".format(str(e)),
-            )
-
-    def cache_metadata(self):
-        try:
-            for k, v in self.array.meta.items():
-                self.cached_meta[k] = v
-        except Exception as e:
-            raise tornado.web.HTTPError(
-                400,
-                "Error in Array::cache_metadata: {}".format(str(e)),
-            )
-
-
-class ArrayListing:
-    """
-    Use this to control caching
-    """
-
-    def __init__(self, category, namespace=None, cache_secs=4):
-        """
-        Create an ArrayListing which will cache results for specified time
-        :param category: category to list
-        :param namespace: namespace to filter to
-        :param cache_secs: cache time, defaults to 4 seconds
-        """
-        self.category = category
-        self.namespace = namespace
-        self.array_listing_future = None
-        self.last_fetched = None
-        self.cache_secs = cache_secs
-
-    def __should_fetch(self):
-        return (
-            self.last_fetched is None
-            or self.array_listing_future is None
-            or self.last_fetched + datetime.timedelta(0, self.cache_secs)
-            < datetime.datetime.now(tz=pytz.UTC)
-        )
-
-    def fetch(self):
-        if self.__should_fetch():
-            if self.category == "owned":
-                self.array_listing_future = tiledb.cloud.client.list_arrays(
-                    file_type=[tiledb.cloud.rest_api.models.FileType.NOTEBOOK],
-                    namespace=self.namespace,
-                    async_req=True,
-                )
-            elif self.category == "shared":
-                self.array_listing_future = tiledb.cloud.client.list_shared_arrays(
-                    file_type=[tiledb.cloud.rest_api.models.FileType.NOTEBOOK],
-                    namespace=self.namespace,
-                    async_req=True,
-                )
-            elif self.category == "public":
-                self.array_listing_future = tiledb.cloud.client.list_public_arrays(
-                    file_type=[tiledb.cloud.rest_api.models.FileType.NOTEBOOK],
-                    namespace=self.namespace,
-                    async_req=True,
-                )
-            self.last_fetched = datetime.datetime.now(tz=pytz.UTC)
-
-        return self
-
-    def get(self):
-        if self.array_listing_future is None:
-            self.fetch()
-
-        return self.array_listing_future.get()
-
-    def arrays(self):
-        ret = self.get()
-        if ret is not None:
-            return ret.arrays
-        return None
-
-
-# global mapping of array listings used for caching
-array_listing = {}
-
-# global mapping of arrays used for caching type and schema
-arrays = {}
 
 
 def get_cloud_enabled():
@@ -284,19 +129,6 @@ def base_directory_model(path):
     return model
 
 
-def remove_path_prefix(path_prefix, path):
-    """
-    Remove a prefix
-    :param path_prefix:
-    :param path:
-    :return:
-    """
-    ret = path.split(path_prefix, 1)
-    if len(ret) > 1:
-        return ret[1]
-    return ret
-
-
 class TileDBContents(manager.ContentsManager):
     """
     A general class for TileDB Contents, parent of the actual contents class and checkpoints
@@ -327,95 +159,6 @@ class TileDBContents(manager.ContentsManager):
         self.validate_notebook_model(model)
         return final_name, model.get("message")
 
-    def _increment_filename(self, filename, insert="-"):
-        """Increment a filename until it is unique.
-
-        Parameters
-        ----------
-        filename : unicode
-            The name of a file, including extension
-        path : unicode
-            The API path of the target's directory
-        insert: unicode
-            The characters to insert after the base filename
-
-        Returns
-        -------
-        name : unicode
-            A filename that is unique, based on the input filename.
-        """
-        # Extract the full suffix from the filename (e.g. .tar.gz)
-        basename, dot, ext = filename.rpartition(".")
-        if ext != "ipynb":
-            basename, dot, ext = filename.partition(".")
-
-        suffix = dot + ext
-
-        parts = basename.split(insert)
-        start = 0
-        if len(parts) > 1:
-            start_str = parts[len(parts) - 1]
-            if start_str.isdigit():
-                start = int(start_str)
-
-            basename = insert.join(parts[0 : len(parts) - 1])
-
-        start += 1
-        if start:
-            insert_i = "{}{}".format(insert, start)
-        else:
-            insert_i = ""
-        name = u"{basename}{insert}{suffix}".format(
-            basename=basename, insert=insert_i, suffix=suffix
-        )
-        return name
-
-    def _increment_notebook(self, filename, insert="-"):
-        """Increment a notebook filename until it is unique.
-
-        Parameters
-        ----------
-        filename : unicode
-            The name of a file, including extension
-        path : unicode
-            The API path of the target's directory
-        insert: unicode
-            The characters to insert after the base filename
-
-        Returns
-        -------
-        name : unicode
-            A filename that is unique, based on the input filename.
-        """
-        # Extract the full suffix from the filename (e.g. .tar.gz)
-        basename, dot, ext = filename.rpartition(".")
-        if ext != "ipynb":
-            basename, dot, ext = filename.partition(".")
-
-        suffix = dot + ext
-
-        parts = basename.split(insert)
-        start = 0
-        if len(parts) > 1:
-            start_str = parts[len(parts) - 1]
-            if start_str.isdigit():
-                start = int(start_str)
-
-            basename = insert.join(parts[0 : len(parts) - 1])
-
-        start += 1
-        if start:
-            insert_i = "{}{}".format(insert, start)
-        else:
-            insert_i = ""
-        name = u"{basename}{insert}{suffix}".format(
-            basename=basename, insert=insert_i, suffix=suffix
-        )
-        return name
-
-    def id_generator(self, size=6, chars=string.ascii_uppercase + string.digits):
-        return "".join(random.choice(chars) for _ in range(size))
-
     def _create_array(
         self,
         uri,
@@ -438,10 +181,10 @@ class TileDBContents(manager.ContentsManager):
             parts = uri.split("/")
             parts_len = len(parts)
             namespace = parts[parts_len - 2]
-            array_name = parts[parts_len - 1] + "_" + self.id_generator()
+            array_name = parts[parts_len - 1] + "_" + paths.generate_id()
 
-            # Initialize context
-            tiledb_create_context = TILEDB_CONTEXT
+            # Use the general cloud context by default.
+            tiledb_create_context = caching.CLOUD_CONTEXT
 
             if s3_credentials is None:
                 s3_credentials = get_s3_credentials(namespace)
@@ -482,7 +225,7 @@ class TileDBContents(manager.ContentsManager):
             if is_user_defined_name:
                 array_name = parts[parts_len - 1]
             else:
-                array_name = parts[parts_len - 1] + "_" + self.id_generator()
+                array_name = parts[parts_len - 1] + "_" + paths.generate_id()
 
             if namespace is not None and (
                 namespace == "cloud"
@@ -571,7 +314,7 @@ class TileDBContents(manager.ContentsManager):
                 parts_length = len(parts)
                 array_name = parts[parts_length - 1]
 
-                array_name = self._increment_filename(array_name)
+                array_name = paths.increment_filename(array_name)
 
                 parts[parts_length - 1] = array_name
                 uri = "/".join(parts)
@@ -597,7 +340,7 @@ class TileDBContents(manager.ContentsManager):
         :param path:
         :return:
         """
-        tiledb_uri = self.tiledb_uri_from_path(path)
+        tiledb_uri = paths.tiledb_uri_from_path(path)
         try:
             tiledb.cloud.array.info(tiledb_uri)
             return True
@@ -630,7 +373,7 @@ class TileDBContents(manager.ContentsManager):
         :param is_user_defined_name: boolean indicating whether the user provided their own filename
         :return:
         """
-        tiledb_uri = self.tiledb_uri_from_path(uri)
+        tiledb_uri = paths.tiledb_uri_from_path(uri)
         final_array_name = None
         if self._is_new:
             # if not self._array_exists(uri):
@@ -638,7 +381,7 @@ class TileDBContents(manager.ContentsManager):
                 tiledb_uri, 5, s3_prefix, s3_credentials, is_user_defined_name
             )
 
-        with tiledb.open(tiledb_uri, mode="w", ctx=TILEDB_CONTEXT) as A:
+        with tiledb.open(tiledb_uri, mode="w", ctx=caching.CLOUD_CONTEXT) as A:
             A[0 : len(contents)] = {"contents": contents}
             A.meta["file_size"] = len(contents)
             if mimetype is not None:
@@ -648,24 +391,9 @@ class TileDBContents(manager.ContentsManager):
             if type is not None:
                 A.meta["type"] = type
 
-        if tiledb_uri not in arrays:
-            arrays[tiledb_uri] = Array(tiledb_uri, {"contents": contents})
+        caching.Array.from_cache(tiledb_uri, {"contents": contents})
 
         return final_array_name
-
-    def tiledb_uri_from_path(self, path):
-        """
-        Build a tiledb:// URI from a notebook cloud path
-        :param path:
-        :return: tiledb uri
-        """
-
-        parts = path.split(os.sep)
-        if len(parts) == 1:
-            parts = path.split("/")
-
-        length = len(parts)
-        return "tiledb://{}/{}".format(parts[length - 2], parts[length - 1])
 
     def _notebook_from_array(self, uri, content=True):
         """
@@ -675,17 +403,14 @@ class TileDBContents(manager.ContentsManager):
 
         model["type"] = "notebook"
         if content:
-            tiledb_uri = self.tiledb_uri_from_path(uri)
+            tiledb_uri = paths.tiledb_uri_from_path(uri)
             try:
                 info = tiledb.cloud.array.info(tiledb_uri)
-                model["last_modified"] = info.last_accessed.replace(tzinfo=utc)
+                model["last_modified"] = _to_utc(info.last_accessed)
                 if "write" not in info.allowed_actions:
                     model["writable"] = False
 
-                if tiledb_uri not in arrays:
-                    arrays[tiledb_uri] = Array(tiledb_uri)
-
-                arr = arrays[tiledb_uri]
+                arr = caching.Array.from_cache(tiledb_uri)
 
                 nb_content = []
                 file_content = arr.read()
@@ -721,17 +446,14 @@ class TileDBContents(manager.ContentsManager):
         model["type"] = "file"
 
         if content:
-            tiledb_uri = self.tiledb_uri_from_path(uri)
+            tiledb_uri = paths.tiledb_uri_from_path(uri)
             try:
                 info = tiledb.cloud.array.info(tiledb_uri)
-                model["last_modified"] = info.last_accessed.replace(tzinfo=utc)
+                model["last_modified"] = _to_utc(info.last_accessed)
                 if "write" not in info.allowed_actions:
                     model["writable"] = False
 
-                if tiledb_uri not in arrays:
-                    arrays[tiledb_uri] = Array(tiledb_uri)
-
-                arr = arrays[tiledb_uri]
+                arr = caching.Array.from_cache(tiledb_uri)
 
                 # Use cached meta, only file_size is ever updated
                 meta = arr.cached_meta
@@ -781,39 +503,6 @@ class TileDBContents(manager.ContentsManager):
 
         return model
 
-    def _is_remote_path(self, path):
-        """
-        Checks if a path is remote or not
-        :param path:
-        :return:
-        """
-        if path.split(os.sep)[0] == "cloud" or path.split("/")[0] == "cloud":
-            return True
-        return False
-
-    def _is_remote_dir(self, path):
-        """
-        Checks if a path is a remote dir or not
-        :param path:
-        :return:
-        """
-        for sep in [os.sep, "/"]:
-            splits = path.split(sep)
-            if len(splits) == 1 and splits[0] == "cloud":
-                return True
-            if (
-                (len(splits) == 2 or len(splits) == 3)
-                and splits[0] == "cloud"
-                and (
-                    splits[1] == "owned"
-                    or splits[1] == "public"
-                    or splits[1] == "shared"
-                )
-            ):
-                return True
-
-        return False
-
     def guess_type(self, path, allow_directory=True):
         """
         Guess the type of a file.
@@ -827,14 +516,14 @@ class TileDBContents(manager.ContentsManager):
             obj: s3.Object or string
         """
         path_fixed = path.strip("/")
-        if self._is_remote_path(path_fixed):
-            if self._is_remote_dir(path_fixed):
+        if paths.is_remote(path_fixed):
+            if paths.is_remote_dir(path_fixed):
                 return "directory"
             else:
-                if path_fixed.endswith(NOTEBOOK_EXT):
-                    path_fixed = path_fixed[: -1 * len(NOTEBOOK_EXT)]
+                if path_fixed.endswith(paths.NOTEBOOK_EXT):
+                    path_fixed = path_fixed[: -1 * len(paths.NOTEBOOK_EXT)]
                 try:
-                    tiledb_uri = self.tiledb_uri_from_path(path_fixed)
+                    tiledb_uri = paths.tiledb_uri_from_path(path_fixed)
                     return self._get_type(tiledb_uri)
                 except Exception:
                     return "directory"
@@ -853,10 +542,7 @@ class TileDBContents(manager.ContentsManager):
         :return:
         """
         try:
-            if uri not in arrays:
-                arrays[uri] = Array(uri)
-
-            arr = arrays[uri]
+            arr = caching.Array.from_cache(uri)
             meta = arr.cached_meta
             if "mimetype" in meta:
                 return meta["mimetype"]
@@ -882,10 +568,7 @@ class TileDBContents(manager.ContentsManager):
         :return:
         """
         try:
-            if uri not in arrays:
-                arrays[uri] = Array(uri)
-
-            arr = arrays[uri]
+            arr = caching.Array.from_cache(uri)
             meta = arr.cached_meta
             if "type" in meta:
                 return meta["type"]
@@ -920,7 +603,7 @@ class TileDBCheckpoints(filecheckpoints.GenericFileCheckpoints, TileDBContents, 
     def create_file_checkpoint(self, content, format, path):
         """ -> checkpoint model"""
         path_fixed = path.strip("/")
-        if not self._is_remote_path(path_fixed):
+        if not paths.is_remote(path_fixed):
             return super().create_file_checkpoint(content, format, path)
 
         return self._tiledb_checkpoint_model()
@@ -928,7 +611,7 @@ class TileDBCheckpoints(filecheckpoints.GenericFileCheckpoints, TileDBContents, 
     def create_notebook_checkpoint(self, nb, path):
         """ -> checkpoint model"""
         path_fixed = path.strip("/")
-        if not self._is_remote_path(path_fixed):
+        if not paths.is_remote(path_fixed):
             return super().create_notebook_checkpoint(nb, path)
 
         return self._tiledb_checkpoint_model()
@@ -936,19 +619,19 @@ class TileDBCheckpoints(filecheckpoints.GenericFileCheckpoints, TileDBContents, 
     def get_file_checkpoint(self, checkpoint_id, path):
         """ -> {'type': 'file', 'content': <str>, 'format': {'text', 'base64'}}"""
         path_fixed = path.strip("/")
-        if not self._is_remote_path(path_fixed):
+        if not paths.is_remote(path_fixed):
             return super().get_file_checkpoint(checkpoint_id, path)
 
     def get_notebook_checkpoint(self, checkpoint_id, path):
         """ -> {'type': 'notebook', 'content': <output of nbformat.read>}"""
         path_fixed = path.strip("/")
-        if not self._is_remote_path(path_fixed):
+        if not paths.is_remote(path_fixed):
             return super().get_notebook_checkpoint(checkpoint_id, path)
 
     def delete_checkpoint(self, checkpoint_id, path):
         """deletes a checkpoint for a file"""
         path_fixed = path.strip("/")
-        if not self._is_remote_path(path_fixed):
+        if not paths.is_remote(path_fixed):
             return super().delete_checkpoint(checkpoint_id, path)
 
     def list_checkpoints(self, path):
@@ -956,14 +639,14 @@ class TileDBCheckpoints(filecheckpoints.GenericFileCheckpoints, TileDBContents, 
         default just does one per file
         """
         path_fixed = path.strip("/")
-        if not self._is_remote_path(path_fixed):
+        if not paths.is_remote(path_fixed):
             return super().list_checkpoints(path)
         return []
 
     def rename_checkpoint(self, checkpoint_id, old_path, new_path):
         """renames checkpoint from old path to new path"""
         path_fixed = old_path.strip("/")
-        if not self._is_remote_path(path_fixed):
+        if not paths.is_remote(path_fixed):
             return super().rename_checkpoint(checkpoint_id, old_path, new_path)
 
 
@@ -991,12 +674,8 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         """
         arrays = []
         try:
-            listing_key = "{}/{}".format(category, namespace)
-            if listing_key not in array_listing:
-                array_listing[listing_key] = ArrayListing(
-                    category=category, namespace=namespace
-                )
-            arrays = array_listing[listing_key].fetch().arrays()
+            listing = caching.ArrayListing.from_cache(category, namespace)
+            arrays = listing.arrays()
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
             raise tornado.web.HTTPError(
                 500, "Error listing notebooks in {}: {}".format(namespace, str(e))
@@ -1025,19 +704,12 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                     # Add notebook extension to name, so jupyterlab will open with as a notebook
                     # It seems to check the extension even though we set the "type" parameter
                     nbmodel["path"] = "cloud/{}/{}/{}{}".format(
-                        category, namespace, nbmodel["path"], NOTEBOOK_EXT
-                    )
-                    nbmodel["last_modified"] = notebook.last_accessed.replace(
-                        tzinfo=utc
+                        category, namespace, nbmodel["path"], paths.NOTEBOOK_EXT
                     )
 
+                    nbmodel["last_modified"] = _to_utc(notebook.last_accessed)
                     # Update namespace directory based on last access notebook
-                    if model["last_modified"].replace(
-                        tzinfo=utc
-                    ) < notebook.last_accessed.replace(tzinfo=utc):
-                        model["last_modified"] = notebook.last_accessed.replace(
-                            tzinfo=utc
-                        )
+                    _maybe_update_last_modified(model, notebook)
 
                     nbmodel["type"] = "notebook"
 
@@ -1059,10 +731,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         """
         arrays = []
         try:
-            if category not in array_listing:
-                array_listing[category] = ArrayListing(category=category)
-
-            arrays = array_listing[category].arrays()
+            arrays = caching.ArrayListing.from_cache(category).arrays()
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
             raise tornado.web.HTTPError(
                 500, "Error listing notebooks in {}: {}".format(category, str(e))
@@ -1140,20 +809,10 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                         namespaces[notebook.namespace] = namespace_model
 
                     # Update directory based on last access notebook
-                    if model["last_modified"].replace(
-                        tzinfo=utc
-                    ) < notebook.last_accessed.replace(tzinfo=utc):
-                        model["last_modified"] = notebook.last_accessed.replace(
-                            tzinfo=utc
-                        )
+                    _maybe_update_last_modified(model, notebook)
 
                     # Update namespace directory based on last access notebook
-                    if namespaces[notebook.namespace]["last_modified"].replace(
-                        tzinfo=utc
-                    ) < notebook.last_accessed.replace(tzinfo=utc):
-                        namespaces[notebook.namespace][
-                            "last_modified"
-                        ] = notebook.last_accessed.replace(tzinfo=utc)
+                    _maybe_update_last_modified(namespaces[notebook.namespace], notebook)
 
             model["content"] = list(namespaces.values())
 
@@ -1172,25 +831,17 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         }
         try:
 
-            if "owned" not in array_listing:
-                array_listing["owned"] = ArrayListing(category="owned")
-            array_listing["owned"].fetch()
-
-            if "public" not in array_listing:
-                array_listing["public"] = ArrayListing(category="public")
-            array_listing["public"].fetch()
-
-            if "shared" not in array_listing:
-                array_listing["shared"] = ArrayListing(category="shared")
-            array_listing["shared"].fetch()
+            owned_listing = caching.ArrayListing.from_cache("owned")
+            shared_listing = caching.ArrayListing.from_cache("shared")
+            public_listing = caching.ArrayListing.from_cache("public")
 
             ret["owned"]["path"] = "cloud/owned"
             ret["public"]["path"] = "cloud/public"
             ret["shared"]["path"] = "cloud/shared"
 
-            owned_notebooks = array_listing["owned"].arrays()
-            shared_notebooks = array_listing["shared"].arrays()
-            public_notebooks = array_listing["public"].arrays()
+            owned_notebooks = owned_listing.arrays()
+            shared_notebooks = shared_listing.arrays()
+            public_notebooks = public_listing.arrays()
             if owned_notebooks is not None:
                 if len(owned_notebooks) > 0:
                     ret["owned"]["format"] = "json"
@@ -1199,23 +850,16 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                         model = base_model(notebook.name)
                         model["type"] = "notebook"
                         model["format"] = "json"
-                        model["last_modified"] = notebook.last_accessed.replace(
-                            tzinfo=utc
-                        )
+                        model["last_modified"] = _to_utc(notebook.last_accessed)
                         # Add notebook extension to path, so jupyterlab will open with as a notebook
                         # It seems to check the extension even though we set the "type" parameter
                         model["path"] = "cloud/{}/{}{}".format(
-                            "owned", model["path"], NOTEBOOK_EXT
+                            "owned", model["path"], paths.NOTEBOOK_EXT
                         )
                         ret["owned"]["content"].append(model)
 
                         # Update category date
-                        if ret["owned"]["last_modified"].replace(
-                            tzinfo=utc
-                        ) < notebook.last_accessed.replace(tzinfo=utc):
-                            ret["owned"][
-                                "last_modified"
-                            ] = notebook.last_accessed.replace(tzinfo=utc)
+                        _maybe_update_last_modified(ret["owned"], notebook)
 
             if shared_notebooks is not None:
                 if len(shared_notebooks) > 0:
@@ -1225,23 +869,16 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                         model = base_model(notebook.name)
                         model["type"] = "notebook"
                         model["format"] = "json"
-                        model["last_modified"] = notebook.last_accessed.replace(
-                            tzinfo=utc
-                        )
+                        model["last_modified"] = _to_utc(notebook.last_accessed)
                         # Add notebook extension to path, so jupyterlab will open with as a notebook
                         # It seems to check the extension even though we set the "type" parameter
                         model["path"] = "cloud/{}/{}{}".format(
-                            "shared", model["path"], NOTEBOOK_EXT
+                            "shared", model["path"], paths.NOTEBOOK_EXT
                         )
                         ret["shared"]["content"].append(model)
 
                         # Update category date
-                        if ret["shared"]["last_modified"].replace(
-                            tzinfo=utc
-                        ) < notebook.last_accessed.replace(tzinfo=utc):
-                            ret["shared"][
-                                "last_modified"
-                            ] = notebook.last_accessed.replace(tzinfo=utc)
+                        _maybe_update_last_modified(ret["shared"], notebook)
 
             if public_notebooks is not None:
                 if len(public_notebooks) > 0:
@@ -1251,23 +888,16 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                         model = base_model(notebook.name)
                         model["type"] = "notebook"
                         model["format"] = "json"
-                        model["last_modified"] = notebook.last_accessed.replace(
-                            tzinfo=utc
-                        )
+                        model["last_modified"] = _to_utc(notebook.last_accessed)
                         # Add notebook extension to path, so jupyterlab will open with as a notebook
                         # It seems to check the extension even though we set the "type" parameter
                         model["path"] = "cloud/{}/{}{}".format(
-                            "public", model["path"], NOTEBOOK_EXT
+                            "public", model["path"], paths.NOTEBOOK_EXT
                         )
                         ret["public"]["content"].append(model)
 
                         # Update category date
-                        if ret["public"]["last_modified"].replace(
-                            tzinfo=utc
-                        ) < notebook.last_accessed.replace(tzinfo=utc):
-                            ret["public"][
-                                "last_modified"
-                            ] = notebook.last_accessed.replace(tzinfo=utc)
+                        _maybe_update_last_modified(ret["public"], notebook)
 
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
             raise tornado.web.HTTPError(
@@ -1285,43 +915,13 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
 
         return list(ret.values())
 
-    def __category_from_path(self, path):
-        """
-        Get the category from a cloud path
-        :param path:
-        :return:
-        """
-        parts = path.split(os.sep)
-        if len(parts) == 0:
-            parts = path.split("/")
-
-        if parts[0] == "cloud" and len(parts) > 1:
-            return parts[1]
-
-        return None
-
-    def __namespace_from_path(self, path):
-        """
-        Get the namespace from a cloud path
-        :param path:
-        :return:
-        """
-        parts = path.split(os.sep)
-        if len(parts) == 1:
-            parts = path.split("/")
-
-        if parts[0] == "cloud" and len(parts) > 2:
-            return parts[2]
-
-        return None
-
     def __directory_model_from_path(self, path, content=False):
         # if self.vfs.is_dir(path):
         #     lstat = self.fs.lstat(path)
         #     if "ST_MTIME" in lstat and lstat["ST_MTIME"]:
         model = base_directory_model(path)
         model["last_modified"] = model["created"] = DUMMY_CREATED_DATE
-        if not self._is_remote_path(path) and not self._is_remote_dir(path):
+        if not paths.is_remote(path) and not paths.is_remote_dir(path):
             return super()._dir_model(path, content)
 
         if path == "cloud":
@@ -1330,16 +930,13 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                 cloud["format"] = "json"
                 cloud["content"] = self.__build_cloud_notebook_lists()
 
-                for category in cloud["content"]:
-                    if category["last_modified"].replace(tzinfo=utc) > cloud[
-                        "last_modified"
-                    ].replace(tzinfo=utc):
-                        cloud["last_modified"] = category["last_modified"]
+                cloud["last_modified"] = max(
+                    _to_utc(cat["last_modified"]) for cat in cloud["content"])
 
             model = cloud
         else:
-            category = self.__category_from_path(path)
-            namespace = self.__namespace_from_path(path)
+            category = paths.extract_category(path)
+            namespace = paths.extract_namespace(path)
 
             if namespace is None:
                 model = self.__list_category(category, content)
@@ -1347,29 +944,6 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                 model = self.__list_namespace(category, namespace, content)
 
         return model
-
-    def __group_to_models(self, path_prefix, paths):
-        """
-        Applies _notebook_model_from_s3_path or _file_model_from_s3_path to each entry of `paths`,
-        depending on the result of `guess_type`.
-        """
-        ret = []
-        for path in paths:
-            # path = remove_path_prefix("file://" + os.getcwd() + "/", path)
-            # path_after = remove_path_prefix(path_prefix, path)
-            # path = path_after
-            # if os.path.basename(path) == self.dir_keep_file:
-            #      continue
-            type_ = self.guess_type(path, allow_directory=True)
-            if type_ == "notebook":
-                ret.append(self._notebook_from_array(path, False))
-            elif type_ == "file":
-                ret.append(self._file_from_array(path, False, None))
-            elif type_ == "directory":
-                ret.append(self.__directory_model_from_path(path, False))
-            else:
-                tornado.web.HTTPError(500, "Unknown file type %s for file '%s'" % (type_, path))
-        return ret
 
     def get(self, path, content=True, type=None, format=None):
         """Get a file or directory model."""
@@ -1379,28 +953,23 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
             path_fixed = "."
 
         try:
-            if not self._is_remote_path(path_fixed):
+            if not paths.is_remote(path_fixed):
                 model = super().get(path, content, type, format)
                 if path_fixed == "." and content and get_cloud_enabled():
                     cloud = base_directory_model("cloud")
                     cloud["content"] = self.__build_cloud_notebook_lists()
                     cloud["format"] = "json"
+                    cloud["last_modified"] = max(
+                        _to_utc(cat["last_modified"]) for cat in cloud["content"])
                     model["content"].append(cloud)
-
-                    for cloud_content in cloud["content"]:
-                        # Update cloud directory based on last access child directory
-                        if cloud["last_modified"].replace(tzinfo=utc) < cloud_content[
-                            "last_modified"
-                        ].replace(tzinfo=utc):
-                            cloud["last_modified"] = cloud_content["last_modified"]
 
                 return model
 
-            if path_fixed.endswith(NOTEBOOK_EXT):
-                path_fixed = path_fixed[: -1 * len(NOTEBOOK_EXT)]
+            if path_fixed.endswith(paths.NOTEBOOK_EXT):
+                path_fixed = path_fixed[: -1 * len(paths.NOTEBOOK_EXT)]
 
             if type is None:
-                if self._is_remote_dir(path_fixed):
+                if paths.is_remote_dir(path_fixed):
                     type = "directory"
                 else:
                     type = self.guess_type(path, allow_directory=True)
@@ -1438,11 +1007,11 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         if model_type not in ("directory", "file", "notebook"):
             raise tornado.web.HTTPError(400, "Unhandled contents type: %s" % model["type"])
 
-        if not self._is_remote_path(path_fixed):
+        if not paths.is_remote(path_fixed):
             return super().save(model, path)
 
-        if path_fixed.endswith(NOTEBOOK_EXT):
-            path_fixed = path_fixed[:-len(NOTEBOOK_EXT)]
+        if path_fixed.endswith(paths.NOTEBOOK_EXT):
+            path_fixed = path_fixed[:-len(paths.NOTEBOOK_EXT)]
             if model["type"] == "file":
                 try:
                     _try_convert_file_to_notebook(model)
@@ -1472,7 +1041,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
             elif model["type"] == "file":
                 raise tornado.web.HTTPError(400, "Only .ipynb files may be created in the cloud.")
             else:
-                if self._is_remote_path(path_fixed):
+                if paths.is_remote(path_fixed):
                     raise tornado.web.HTTPError(
                         400,
                         "Trying to create unsupported type: %s in cloud"
@@ -1493,15 +1062,14 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
     def delete_file(self, path):
         """Delete the file or directory at path."""
         path_fixed = path.strip("/")
-        if self._is_remote_path(path_fixed):
+        if paths.is_remote(path_fixed):
 
-            if path_fixed.endswith(NOTEBOOK_EXT):
-                path_fixed = path_fixed[: -1 * len(NOTEBOOK_EXT)]
+            if path_fixed.endswith(paths.NOTEBOOK_EXT):
+                path_fixed = path_fixed[: -1 * len(paths.NOTEBOOK_EXT)]
 
-            tiledb_uri = self.tiledb_uri_from_path(path_fixed)
+            tiledb_uri = paths.tiledb_uri_from_path(path_fixed)
             try:
-                if tiledb_uri in arrays:
-                    del arrays[tiledb_uri]
+                caching.Array.purge(tiledb_uri)
                 return tiledb.cloud.array.delete_array(
                     tiledb_uri, "application/x-ipynb+json"
                 )
@@ -1520,19 +1088,18 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
     def rename_file(self, old_path, new_path):
         """Rename a file or directory."""
         old_path_fixed = old_path.strip("/")
-        if self._is_remote_path(old_path_fixed):
+        if paths.is_remote(old_path_fixed):
 
-            if old_path_fixed.endswith(NOTEBOOK_EXT):
-                old_path_fixed = old_path_fixed[: -1 * len(NOTEBOOK_EXT)]
+            if old_path_fixed.endswith(paths.NOTEBOOK_EXT):
+                old_path_fixed = old_path_fixed[: -1 * len(paths.NOTEBOOK_EXT)]
 
-            tiledb_uri = self.tiledb_uri_from_path(old_path_fixed)
+            tiledb_uri = paths.tiledb_uri_from_path(old_path_fixed)
             parts_new = new_path.split("/")
             parts_new_length = len(parts_new)
             array_name_new = parts_new[parts_new_length - 1]
 
             try:
-                if tiledb_uri in arrays:
-                    del arrays[tiledb_uri]
+                caching.Array.purge(tiledb_uri)
                 return tiledb.cloud.notebook.rename_notebook(
                     uri=tiledb_uri, notebook_name=array_name_new
                 )
@@ -1566,7 +1133,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
             path = "."
 
         path_fixed = path.strip("/")
-        if self._is_remote_dir(path_fixed):
+        if paths.is_remote_dir(path_fixed):
             return True
 
         return super().dir_exists(path)
@@ -1584,7 +1151,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
             Whether the path is hidden.
         """
         path_fixed = path.strip("/")
-        if self._is_remote_path(path_fixed):
+        if paths.is_remote(path_fixed):
             return False
 
         return super().is_hidden(path)
@@ -1606,9 +1173,9 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         #     path = "."
 
         path_fixed = path.strip("/")
-        if self._is_remote_path(path_fixed):
-            if path_fixed.endswith(NOTEBOOK_EXT):
-                path_fixed = path_fixed[: -1 * len(NOTEBOOK_EXT)]
+        if paths.is_remote(path_fixed):
+            if path_fixed.endswith(paths.NOTEBOOK_EXT):
+                path_fixed = path_fixed[: -1 * len(paths.NOTEBOOK_EXT)]
             return self._array_exists(path_fixed)
         return super().file_exists(path)
 
@@ -1693,3 +1260,20 @@ def _try_convert_file_to_notebook(model):
         mimetype=None,
         content=nb,
     )
+
+
+def _to_utc(d: datetime.datetime) -> datetime.datetime:
+    """Returns a version of d converted to UTC.
+
+    If naive (no timezone), UTC will be added; if timezone-aware, the time
+    will be converted.
+    """
+    if not d.tzinfo:
+        return d.replace(tzinfo=datetime.timezone.utc)
+    return d.astimezone(datetime.timezone.utc)
+
+
+def _maybe_update_last_modified(model: Dict[str, Any], notebook: Any) -> None:
+    nb_last_acc = _to_utc(notebook.last_accessed)
+    md_last_mod = _to_utc(model["last_modified"])
+    model["last_modified"] = max(nb_last_acc, md_last_mod)
