@@ -1,8 +1,5 @@
 import base64
-import datetime
 import json
-import posixpath
-from typing import Any, Dict
 
 import nbformat
 import numpy
@@ -17,33 +14,13 @@ from notebook.services.contents import manager
 
 from . import arrays
 from . import caching
+from . import listings
+from . import models
 from . import paths
-
-
-_DUMMY_DATE = datetime.datetime.fromtimestamp(0, tzinfo=datetime.timezone.utc)
 
 NBFORMAT_VERSION = 4
 
 NOTEBOOK_MIME = "application/x-ipynb+json"
-
-
-def get_cloud_enabled():
-    """
-    Check if a user is allowed to access notebook sharing
-    """
-
-    try:
-        profile = tiledb.cloud.client.user_profile()
-        if "notebook_sharing" in set(profile.enabled_features):
-            return True
-
-    except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-        raise tornado.web.HTTPError(
-            400,
-            "Error fetching user default s3 path for new notebooks {}".format(str(e)),
-        )
-
-    return False
 
 
 class TileDBContents(manager.ContentsManager):
@@ -81,12 +58,12 @@ class TileDBContents(manager.ContentsManager):
         """
         Build a notebook model from database record.
         """
-        model = _base_model(path=path, type="notebook")
+        model = models.create(path=path, type="notebook")
         if content:
             tiledb_uri = paths.tiledb_uri_from_path(path)
             try:
                 info = tiledb.cloud.array.info(tiledb_uri)
-                model["last_modified"] = _to_utc(info.last_accessed)
+                model["last_modified"] = models.to_utc(info.last_accessed)
                 if "write" not in info.allowed_actions:
                     model["writable"] = False
 
@@ -122,13 +99,13 @@ class TileDBContents(manager.ContentsManager):
         """
         Build a notebook model from database record.
         """
-        model = _base_model(path=path, type="file")
+        model = models.create(path=path, type="file")
 
         if content:
             tiledb_uri = paths.tiledb_uri_from_path(path)
             try:
                 info = tiledb.cloud.array.info(tiledb_uri)
-                model["last_modified"] = _to_utc(info.last_accessed)
+                model["last_modified"] = models.to_utc(info.last_accessed)
                 if "write" not in info.allowed_actions:
                     model["writable"] = False
 
@@ -215,7 +192,7 @@ class TileDBContents(manager.ContentsManager):
             return "file"
 
 
-class TileDBCheckpoints(filecheckpoints.GenericFileCheckpoints, TileDBContents, checkpoints.Checkpoints):
+class TileDBCheckpoints(filecheckpoints.GenericFileCheckpoints, checkpoints.Checkpoints):
     """
     A wrapper of a class which will in the future support checkpoints by time traveling.
     It inherits from GenericFileCheckpoints for local notebooks
@@ -275,9 +252,6 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
     # This makes the checkpoints get saved on this directory
     root_dir = traitlets.Unicode("./", config=True)
 
-    def __init__(self, **kwargs):
-        super(filemanager.FileContentsManager, self).__init__(**kwargs)
-
     def _checkpoints_class_default(self):
         """
         Set checkpoint class to custom checkpoint class
@@ -285,285 +259,27 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         """
         return TileDBCheckpoints
 
-    def __list_namespace(self, category, namespace, content=False):
-        """
-        List all notebook arrays in a namespace, this is setup to mimic a "ls" of a directory
-        :param category: category to list, shared, owned or public
-        :param namespace: namespace to list
-        :param content: should contents be included
-        :return: model of namespace
-        """
-        arrays = []
-        try:
-            listing = caching.ArrayListing.from_cache(category, namespace)
-            arrays = listing.arrays()
-        except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-            raise tornado.web.HTTPError(
-                500, "Error listing notebooks in {}: {}".format(namespace, str(e))
-            )
-        except tiledb.TileDBError as e:
-            raise tornado.web.HTTPError(
-                500,
-                str(e),
-            )
-        except Exception as e:
-            raise tornado.web.HTTPError(
-                400,
-                "Error listing notebooks in  {}: {}".format(namespace, str(e)),
-            )
-
-        model = _base_model(
-            path=paths.join("cloud", category, namespace),
-            type="directory",
-        )
-        if content:
-            # Build model content if asked for
-            model["format"] = "json"
-            model["content"] = []
-            if arrays is not None:
-                for notebook in arrays:
-                    nbmodel = _base_model(path=notebook.name)
-
-                    # Add notebook extension to name, so jupyterlab will open with as a notebook
-                    # It seems to check the extension even though we set the "type" parameter
-                    nbmodel["path"] = "cloud/{}/{}/{}{}".format(
-                        category, namespace, nbmodel["path"], paths.NOTEBOOK_EXT
-                    )
-
-                    nbmodel["last_modified"] = _to_utc(notebook.last_accessed)
-                    # Update namespace directory based on last access notebook
-                    _maybe_update_last_modified(model, notebook)
-
-                    nbmodel["type"] = "notebook"
-
-                    if (
-                        notebook.allowed_actions is None
-                        or "write" not in notebook.allowed_actions
-                    ):
-                        model["writable"] = False
-                    model["content"].append(nbmodel)
-
-        return model
-
-    def __list_category(self, category, content=True):
-        """
-        This function should be switched to use sidebar data
-        :param category:
-        :param content:
-        :return:
-        """
-        arrays = []
-        try:
-            arrays = caching.ArrayListing.from_cache(category).arrays()
-        except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-            raise tornado.web.HTTPError(
-                500, "Error listing notebooks in {}: {}".format(category, str(e))
-            )
-        except tiledb.TileDBError as e:
-            raise tornado.web.HTTPError(
-                500,
-                str(e),
-            )
-        except Exception as e:
-            raise tornado.web.HTTPError(
-                400,
-                "Error listing notebooks in  {}: {}".format(category, str(e)),
-            )
-
-        model = _base_model(path=paths.join("cloud", category), type="directory")
-        if content:
-            model["format"] = "json"
-            model["content"] = []
-            namespaces = {}
-            if category == "owned":
-                # For owned, we should always list the user and their
-                # organizations. If there is actual notebooks they will be
-                # listed below. This base listing is so users can create new
-                # notebooks in any of the namespaces they are part of.
-                try:
-                    profile = tiledb.cloud.client.user_profile()
-                    namespace_model = _base_model(
-                        path=paths.join("cloud", category, profile.username),
-                        type="directory",
-                        format="json",
-                    )
-                    namespaces[profile.username] = namespace_model
-
-                    for org in profile.organizations:
-                        # Don't list public for owned
-                        if org.organization_name == "public":
-                            continue
-
-                        namespace_model = _base_model(
-                            path=paths.join("cloud", category, org.organization_name),
-                            type="directory",
-                            format="json",
-                        )
-
-                        namespaces[org.organization_name] = namespace_model
-
-                except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-                    raise tornado.web.HTTPError(
-                        500,
-                        "Error listing notebooks in {}: {}".format(category, str(e)),
-                    )
-                except tiledb.TileDBError as e:
-                    raise tornado.web.HTTPError(
-                        500,
-                        str(e),
-                    )
-                except Exception as e:
-                    raise tornado.web.HTTPError(
-                        400,
-                        "Error listing notebooks in  {}: {}".format(category, str(e)),
-                    )
-
-            # If the arrays are non-empty list them out
-            if arrays is not None:
-                for notebook in arrays:
-                    if notebook.namespace not in namespaces:
-                        namespace_model = _base_model(
-                            path=paths.join("cloud", category, notebook.namespace),
-                            type="directory",
-                            format="json",
-                            writable=False,
-                        )
-                        namespaces[notebook.namespace] = namespace_model
-
-                    # Update directory based on last access notebook
-                    _maybe_update_last_modified(model, notebook)
-
-                    # Update namespace directory based on last access notebook
-                    _maybe_update_last_modified(namespaces[notebook.namespace], notebook)
-
-            model["content"] = list(namespaces.values())
-
-        return model
-
-    def __build_cloud_notebook_lists(self):
-        """
-        Build a list of all notebooks across all categories
-        :return:
-        """
-
-        ret = {
-            "owned": _base_model(path="owned", type="directory"),
-            "shared": _base_model(path="shared", type="directory"),
-            "public": _base_model(path="public", type="directory"),
-        }
-        try:
-
-            owned_listing = caching.ArrayListing.from_cache("owned")
-            shared_listing = caching.ArrayListing.from_cache("shared")
-            public_listing = caching.ArrayListing.from_cache("public")
-
-            ret["owned"]["path"] = "cloud/owned"
-            ret["public"]["path"] = "cloud/public"
-            ret["shared"]["path"] = "cloud/shared"
-
-            owned_notebooks = owned_listing.arrays()
-            shared_notebooks = shared_listing.arrays()
-            public_notebooks = public_listing.arrays()
-            if owned_notebooks is not None:
-                if len(owned_notebooks) > 0:
-                    ret["owned"]["format"] = "json"
-                    ret["owned"]["content"] = []
-                    for notebook in owned_notebooks:
-                        model = _base_model(
-                            path=notebook.name,
-                            type="notebook",
-                            format="json",
-                            last_modified=_to_utc(notebook.last_accessed),
-                        )
-                        # Add notebook extension to path, so jupyterlab will open with as a notebook
-                        # It seems to check the extension even though we set the "type" parameter
-                        model["path"] = "cloud/{}/{}{}".format(
-                            "owned", model["path"], paths.NOTEBOOK_EXT
-                        )
-                        ret["owned"]["content"].append(model)
-
-                        # Update category date
-                        _maybe_update_last_modified(ret["owned"], notebook)
-
-            if shared_notebooks is not None:
-                if len(shared_notebooks) > 0:
-                    ret["shared"]["format"] = "json"
-                    ret["shared"]["content"] = []
-                    for notebook in shared_notebooks:
-                        model = _base_model(
-                            path=notebook.name,
-                            type="notebook",
-                            format="json",
-                            last_modified=_to_utc(notebook.last_accessed),
-                        )
-                        # Add notebook extension to path, so jupyterlab will open with as a notebook
-                        # It seems to check the extension even though we set the "type" parameter
-                        model["path"] = "cloud/{}/{}{}".format(
-                            "shared", model["path"], paths.NOTEBOOK_EXT
-                        )
-                        ret["shared"]["content"].append(model)
-
-                        # Update category date
-                        _maybe_update_last_modified(ret["shared"], notebook)
-
-            if public_notebooks is not None:
-                if len(public_notebooks) > 0:
-                    ret["public"]["format"] = "json"
-                    ret["public"]["content"] = []
-                    for notebook in public_notebooks:
-                        model = _base_model(
-                            path=notebook.name,
-                            type="notebook",
-                            format="json",
-                            last_modified=_to_utc(notebook.last_accessed),
-                        )
-                        # Add notebook extension to path, so jupyterlab will open with as a notebook
-                        # It seems to check the extension even though we set the "type" parameter
-                        model["path"] = "cloud/{}/{}{}".format(
-                            "public", model["path"], paths.NOTEBOOK_EXT
-                        )
-                        ret["public"]["content"].append(model)
-
-                        # Update category date
-                        _maybe_update_last_modified(ret["public"], notebook)
-
-        except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-            raise tornado.web.HTTPError(
-                500, "Error building cloud notebook info: {}".format(str(e))
-            )
-        except tiledb.TileDBError as e:
-            raise tornado.web.HTTPError(
-                500,
-                str(e),
-            )
-        except Exception as e:
-            raise tornado.web.HTTPError(
-                500, "Error building cloud notebook info: {}".format(str(e))
-            )
-
-        return list(ret.values())
-
-    def __directory_model_from_path(self, path, content=False):
+    def _directory_model_from_path(self, path, *, content: bool = False):
         # if self.vfs.is_dir(path):
         #     lstat = self.fs.lstat(path)
         #     if "ST_MTIME" in lstat and lstat["ST_MTIME"]:
-        model = _base_model(
+        model = models.create(
             path=path,
             type="directory",
-            last_modified=_DUMMY_DATE,
-            created=_DUMMY_DATE,
+            last_modified=models.DUMMY_DATE,
+            created=models.DUMMY_DATE,
         )
         if not paths.is_remote(path) and not paths.is_remote_dir(path):
-            return super()._dir_model(path, content)
+            return self._dir_model(path, content=content)
 
         if path == "cloud":
-            cloud = _base_model(path="cloud", type="directory")
+            cloud = models.create(path="cloud", type="directory")
             if content:
                 cloud["format"] = "json"
-                cloud["content"] = self.__build_cloud_notebook_lists()
+                cloud["content"] = listings.all_notebooks()
 
                 cloud["last_modified"] = max(
-                    _to_utc(cat["last_modified"]) for cat in cloud["content"])
+                    models.to_utc(cat["last_modified"]) for cat in cloud["content"])
 
             model = cloud
         else:
@@ -571,9 +287,9 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
             namespace = paths.extract_namespace(path)
 
             if namespace is None:
-                model = self.__list_category(category, content)
+                model = listings.category(category, content=content)
             elif category is not None and namespace is not None:
-                model = self.__list_namespace(category, namespace, content)
+                model = listings.namespace(category, namespace, content=content)
 
         return model
 
@@ -583,16 +299,16 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         try:
             if not paths.is_remote(path):
                 model = super().get(path, content, type, format)
-                if path == "" and content and get_cloud_enabled():
-                    cloud_content = self.__build_cloud_notebook_lists()
+                if path == "" and content and _is_cloud_enabled():
+                    cloud_content = listings.all_notebooks()
                     model["content"].append(
-                        _base_model(
+                        models.create(
                             path="cloud",
                             type="directory",
                             content=content,
                             format="json",
                             last_modified=max(
-                                _to_utc(cat["last_modified"]) for cat in cloud_content
+                                models.to_utc(cat["last_modified"]) for cat in cloud_content
                             ),
                         )
                     )
@@ -609,11 +325,11 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                     type = self.guess_type(path, allow_directory=True)
 
             if type == "notebook":
-                return self._notebook_from_array(path, content)
+                return self._notebook_from_array(path, content=content)
             elif type == "file":
-                return self._file_from_array(path, content, format)
+                return self._file_from_array(path, content=content, format=format)
             elif type == "directory":
-                return self.__directory_model_from_path(path, content)
+                return self._directory_model_from_path(path, content=content)
                 # if model is not None:
                 #     model.
         except Exception as e:
@@ -890,35 +606,20 @@ def _try_convert_file_to_notebook(model):
     )
 
 
-def _to_utc(d: datetime.datetime) -> datetime.datetime:
-    """Returns a version of d converted to UTC.
-
-    If naive (no timezone), UTC will be added; if timezone-aware, the time
-    will be converted.
+def _is_cloud_enabled():
     """
-    if not d.tzinfo:
-        return d.replace(tzinfo=datetime.timezone.utc)
-    return d.astimezone(datetime.timezone.utc)
+    Check if a user is allowed to access notebook sharing
+    """
 
+    try:
+        profile = tiledb.cloud.client.user_profile()
+        if "notebook_sharing" in set(profile.enabled_features):
+            return True
 
-def _maybe_update_last_modified(model: Dict[str, Any], notebook: Any) -> None:
-    nb_last_acc = _to_utc(notebook.last_accessed)
-    md_last_mod = _to_utc(model["last_modified"])
-    model["last_modified"] = max(nb_last_acc, md_last_mod)
+    except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+        raise tornado.web.HTTPError(
+            400,
+            "Error fetching user default s3 path for new notebooks {}".format(str(e)),
+        )
 
-
-def _base_model(*, path: str, **kwargs) -> Dict[str, Any]:
-    """Create the most basic model."""
-    # Originally from:
-    # https://github.com/danielfrg/s3contents/blob/master/s3contents/genericmanager.py
-    model = {
-        "name": posixpath.basename(path),
-        "path": path,
-        "writable": True,
-        "last_modified": _DUMMY_DATE,
-        "created": _DUMMY_DATE,
-        "content": None,
-        "format": None,
-        "mimetype": None,
-    }
-    model.update(**kwargs)
+    return False

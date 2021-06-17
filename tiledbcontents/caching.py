@@ -1,12 +1,14 @@
 """Tools to handle caching of TileDB arrays and listings."""
 
 import time
-from typing import Any, Dict, Optional, Tuple, Type
+from typing import Dict, Optional, Tuple, Type
 
 import tiledb
 import tiledb.cloud
 import tiledb.cloud.client
 import tornado.web
+
+from . import models
 
 CLOUD_CONTEXT = tiledb.cloud.Ctx()
 
@@ -14,7 +16,7 @@ CLOUD_CONTEXT = tiledb.cloud.Ctx()
 class Array:
     """Caching wrapper around a TileDB Array."""
 
-    def __init__(self, uri: str, contents: Optional[Dict[str, Any]] = None):
+    def __init__(self, uri: str, contents: Optional[models.Model] = None):
         """
         Create an Array wrapping a TileDB Array class
         :param uri:
@@ -25,10 +27,10 @@ class Array:
         except Exception as e:
             raise tornado.web.HTTPError(400, f"Error in Array init: {e}") from e
         self.contents_fetched = False
-        self.cached_meta: Dict[str, Any] = {}
+        self.cached_meta: models.Model = {}
         self.cache_metadata()
         # Cache contents if exist during first array write
-        self.cached_contents: Optional[Dict[str, Any]] = contents
+        self.cached_contents: Optional[models.Model] = contents
 
     # A global cache of Arrays by URI.
     _cache: Dict[str, "Array"] = {}
@@ -47,7 +49,7 @@ class Array:
     def purge(cls: Type["Array"], uri: str) -> None:
         cls._cache.pop(uri, None)
 
-    def read(self) -> Optional[Dict[str, Any]]:
+    def read(self) -> Optional[models.Model]:
         """
         Fetch all contents of the array based on file_size metadata field
         :return: raw bytes of content
@@ -101,6 +103,8 @@ _CATEGORY_LOADERS = {
     "shared": tiledb.cloud.client.list_shared_arrays,
     "public": tiledb.cloud.client.list_public_arrays,
 }
+
+CATEGORIES = frozenset(_CATEGORY_LOADERS)
 
 _CACHE_SECS = 4
 
