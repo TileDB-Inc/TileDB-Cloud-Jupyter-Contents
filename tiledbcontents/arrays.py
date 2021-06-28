@@ -119,7 +119,6 @@ def create(
         try:
             parts = paths.split(path)
             namespace = parts[-2]
-            array_name = parts[-1] + "_" + paths.generate_id()
 
             # Use the general cloud context by default.
             tiledb_create_context = caching.CLOUD_CONTEXT

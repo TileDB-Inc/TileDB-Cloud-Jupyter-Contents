@@ -28,7 +28,7 @@ class TileDBContents(manager.ContentsManager):
     A general class for TileDB Contents, parent of the actual contents class and checkpoints
     """
 
-    def _save_notebook_tiledb(self, path: str, model, *, is_new: bool):
+    def _save_notebook_tiledb(self, path: str, model: models.Model):
         """
         Save a notebook to tiledb array
         :param model: model notebook
@@ -45,10 +45,10 @@ class TileDBContents(manager.ContentsManager):
             mimetype=model.get("mimetype"),
             format=model.get("format"),
             type="notebook",
-            s3_prefix=model.get("s3_prefix", None),
-            s3_credentials=model.get("s3_credentials", None),
+            s3_prefix=model.get("tiledb:s3_prefix", None),
+            s3_credentials=model.get("tiledb:s3_credentials", None),
             is_user_defined_name="name" in model,
-            is_new=is_new,
+            is_new=model.get("tiledb:is_new", False),
         )
 
         self.validate_notebook_model(model)
@@ -367,21 +367,11 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                 except ValueError as ve:
                     raise tornado.web.HTTPError(400, f"Cannot parse Jupyter notebook: {ve}")
 
-        is_new = True
-        if (
-            "content" in model
-            and "metadata" in model["content"]
-            and "language_info" in model["content"]["metadata"]
-        ):
-            is_new = False
-
         self.run_pre_save_hook(model=model, path=path)
         validation_message = None
         try:
             if model["type"] == "notebook":
-                final_name, validation_message = self._save_notebook_tiledb(
-                    path, model, is_new=is_new
-                )
+                final_name, validation_message = self._save_notebook_tiledb(path, model)
                 if final_name is not None:
                     parts = paths.split(path)
                     parts_length = len(parts)
@@ -547,32 +537,34 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
             try:
                 options_json = json.loads(options)
                 model["name"] = options_json["name"]
-                model["s3_prefix"] = options_json["s3_prefix"]
-                model["s3_credentials"] = options_json["s3_credentials"]
+                model["tiledb:s3_prefix"] = options_json["s3_prefix"]
+                model["tiledb:s3_credentials"] = options_json["s3_credentials"]
             except Exception as e:
                 raise tornado.web.HTTPError(
                     400, u"Could not read TileDB user options: {}".format(e)
                 )
 
-        if model["type"] == "notebook" and "name" in model:
-            path = u"{0}/{1}".format(path, model["name"] + ".ipynb")
-            return self.new(model, path)
-
-        insert = ""
         if model["type"] == "directory":
-            untitled = self.untitled_directory
-            insert = " "
+            prefix = self.untitled_directory
         elif model["type"] == "notebook":
-            untitled = self.untitled_notebook
+            prefix = model.get("name", self.untitled_notebook)
             ext = ".ipynb"
         elif model["type"] == "file":
-            untitled = self.untitled_file
+            prefix = self.untitled_file
         else:
             raise tornado.web.HTTPError(400, "Unexpected model type: %r" % model["type"])
 
-        name = self.increment_filename(untitled + ext, path, insert=insert)
-        path = u"{0}/{1}".format(path, name)
-        return self.new(model, path)
+        # We don't do the "increment" step that the default ContentsManager does
+        # because we generate a random suffix or increment the filename in
+        # _save_notebook_tiledb.
+        full_path = paths.join(path, prefix + ext)
+        return self.new(model, full_path)
+
+    def new(self, model=None, path=""):
+        if model is None:
+            model = {}
+        model["tiledb:is_new"] = True
+        return super().new(model, path)
 
 
 def _try_convert_file_to_notebook(model):
