@@ -121,7 +121,7 @@ class ArrayListing:
         """
         self.category = category
         self.namespace = namespace
-        self.array_listing_future = None
+        self._array_listing_future = None
         self.last_fetched: Optional[float] = None
 
     # A global cache of ArrayListings by category.
@@ -142,11 +142,11 @@ class ArrayListing:
     def _should_fetch(self):
         return (
             self.last_fetched is None
-            or self.array_listing_future is None
+            or self._array_listing_future is None
             or self.last_fetched + _CACHE_SECS < time.time()
         )
 
-    def fetch(self):
+    def _fetch(self):
         if self._should_fetch():
             try:
                 loader = _CATEGORY_LOADERS[self.category]
@@ -155,21 +155,15 @@ class ArrayListing:
                     f"Invalid category name {self.category!r}; "
                     f"must be one of {set(_CATEGORY_LOADERS.keys())}"
                 ) from None
-            self.array_listing_future = loader(
+            self._array_listing_future = loader(
                 file_type=[tiledb.cloud.rest_api.models.FileType.NOTEBOOK],
                 namespace=self.namespace,
                 async_req=True,
             )
             self.last_fetched = time.time()
 
-        return self
-
-    def get(self):
-        if self.array_listing_future is None:
-            self.fetch()
-
-        return self.array_listing_future.get()
+        return self._array_listing_future
 
     def arrays(self):
-        ret = self.get()
-        return ret and ret.arrays
+        result = self._fetch().get()
+        return result and result.arrays
