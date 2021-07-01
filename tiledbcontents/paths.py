@@ -4,7 +4,7 @@
 import posixpath
 import random
 import string
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 
 NOTEBOOK_EXT = ".ipynb"
@@ -105,38 +105,31 @@ def remove_prefix(path_prefix: str, path: str) -> str:
     return after or before
 
 
-def extract_category(path: str) -> Optional[str]:
-    """Pulls the category out of a Cloud path.
+def category_namespace(path: str) -> Tuple[Optional[str], Optional[str]]:
+    """Pulls the category and namespace out of a Cloud path.
 
-    >>> extract_category("cloud/owned/me/my-array")
-    'owned'
+    If the namespace is present, then the category is guaranteed to be set.
+
+    >>> category_namespace("cloud/owned/me/my-array")
+    ('owned', 'me')
+    >>> category_namespace("cloud/owned")
+    ('owned', None)
     >>> extract_category("local/path/to/array")
+    (None, None)
     >>> extract_category("cloud")
+    (None, None)
     """
     parts = split(path)
     if parts[0] != "cloud":
-        return None
+        return (None, None)
     try:
-        return parts[1]
+        category = parts[1]
     except IndexError:
-        return None
-
-
-def extract_namespace(path: str) -> Optional[str]:
-    """Pulls the namespace out of a Cloud path.
-
-    >>> extract_namespace("cloud/owned/me/my-array")
-    'me'
-    >>> extract_namespace("local/path/to/array")
-    >>> extract_namespace("cloud/owned")
-    """
-    parts = split(path)
-    if parts[0] != "cloud":
-        return None
+        return (None, None)
     try:
-        return parts[2]
+        return (category, parts[2])
     except IndexError:
-        return None
+        return (category, None)
 
 
 RESERVED_NAMES = frozenset(["cloud", "owned", "public", "shared"])

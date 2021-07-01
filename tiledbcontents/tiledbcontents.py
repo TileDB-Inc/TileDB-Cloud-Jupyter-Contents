@@ -263,12 +263,6 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         # if self.vfs.is_dir(path):
         #     lstat = self.fs.lstat(path)
         #     if "ST_MTIME" in lstat and lstat["ST_MTIME"]:
-        model = models.create(
-            path=path,
-            type="directory",
-            last_modified=models.DUMMY_DATE,
-            created=models.DUMMY_DATE,
-        )
         if not paths.is_remote(path) and not paths.is_remote_dir(path):
             return self._dir_model(path, content=content)
 
@@ -281,17 +275,20 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                 cloud["last_modified"] = max(
                     models.to_utc(cat["last_modified"]) for cat in cloud["content"])
 
-            model = cloud
-        else:
-            category = paths.extract_category(path)
-            namespace = paths.extract_namespace(path)
+            return cloud
 
-            if namespace is None:
-                model = listings.category(category, content=content)
-            elif category is not None and namespace is not None:
-                model = listings.namespace(category, namespace, content=content)
+        category, namespace = paths.category_namespace(path)
+        if category:
+            if namespace:
+                return listings.namespace(category, namespace, content=content)
+            return listings.category(category, content=content)
 
-        return model
+        return models.create(
+            path=path,
+            type="directory",
+            last_modified=models.DUMMY_DATE,
+            created=models.DUMMY_DATE,
+        )
 
     def get(self, path, content=True, type=None, format=None):
         """Get a file or directory model."""
@@ -565,6 +562,28 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
             model = {}
         model["tiledb:is_new"] = True
         return super().new(model, path)
+
+    def copy(self, from_path, to_path=None):
+        from_path = paths.strip(from_path)
+        model = self.get(from_path)
+        model.pop('path', None)
+        if not to_path:
+            # A missing to_path implies that we should create a duplicate
+            # in the same location (with a new name).
+            to_path = from_path
+        else:
+            to_path = paths.strip(to_path)
+            if self.dir_exists(to_path):
+                # to_path may be a directory, in which case we copy
+                # the model to an identically-named entry in that directory.
+                from_parts = paths.split(from_path)
+                from_filename = from_parts[-1]
+                to_path = paths.join(to_path, from_filename)
+
+        # As in new_untitled, we don't increment our filenames because they are
+        # dedup'd in _save_notebook_tiledb.
+
+        return self.new(model, to_path)
 
 
 def _try_convert_file_to_notebook(model):
