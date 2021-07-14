@@ -1,5 +1,6 @@
 import base64
 import json
+import posixpath
 
 import nbformat
 import numpy
@@ -354,6 +355,12 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
             raise tornado.web.HTTPError(400, "Unhandled contents type: %s" % model["type"])
 
         if not paths.is_remote(path):
+            if model.get("tiledb:is_new"):
+                # Since we don't try to increment the filename in self.new(),
+                # do it here for newly-created files.
+                dir, name = posixpath.split(path)
+                incremented = self.increment_filename(name, dir, insert='-')
+                path = paths.join(dir, incremented)
             return super().save(model, path)
 
         if path.endswith(paths.NOTEBOOK_EXT):
