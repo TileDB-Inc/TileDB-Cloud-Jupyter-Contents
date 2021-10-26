@@ -41,6 +41,10 @@ def fetch_type(uri: str) -> Optional[str]:
         return None
 
 
+def current_milli_time() -> int:
+    return round(time.time() * 1000)
+
+
 def write_bytes(
     path: str,
     contents: numpy.ndarray,
@@ -81,7 +85,7 @@ def write_bytes(
             is_user_defined_name=is_user_defined_name,
         )
 
-    with tiledb.open(tiledb_uri, mode="w", ctx=caching.CLOUD_CONTEXT) as arr:
+    with tiledb.open(tiledb_uri, mode="w", timestamp=current_milli_time(), ctx=caching.CLOUD_CONTEXT) as arr:
         arr[0:len(contents)] = {"contents": contents}
         arr.meta["file_size"] = len(contents)
         if mimetype is not None:
