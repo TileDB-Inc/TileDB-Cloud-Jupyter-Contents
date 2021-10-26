@@ -85,6 +85,9 @@ def write_bytes(
             is_user_defined_name=is_user_defined_name,
         )
 
+    # TODO: remove calling tiledb.open with timestamp when related TileDB Core bug is fixed
+    # Calling tiledb.open with timestamp should not be needed because TileDB-Py always send the current timestamp
+    # Due to bug in TileDB Core the timestamp at which write is done is always 0
     with tiledb.open(tiledb_uri, mode="w", timestamp=current_milli_time(), ctx=caching.CLOUD_CONTEXT) as arr:
         arr[0:len(contents)] = {"contents": contents}
         arr.meta["file_size"] = len(contents)
