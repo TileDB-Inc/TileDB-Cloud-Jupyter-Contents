@@ -413,9 +413,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
             tiledb_uri = paths.tiledb_uri_from_path(path)
             try:
                 caching.Array.purge(tiledb_uri)
-                return tiledb.cloud.array.delete_array(
-                    tiledb_uri, "application/x-ipynb+json"
-                )
+                return tiledb.cloud.array.delete_array(tiledb_uri)
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
                 raise tornado.web.HTTPError(
                     500, f"Error deregistering {tiledb_uri!r}: {e}"
