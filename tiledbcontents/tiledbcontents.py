@@ -442,9 +442,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
 
             try:
                 caching.Array.purge(tiledb_uri)
-                return tiledb.cloud.notebook.rename_notebook(
-                    uri=tiledb_uri, notebook_name=array_name_new
-                )
+                return tiledb.cloud.notebook.rename_notebook(tiledb_uri, array_name_new)
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
                 raise tornado.web.HTTPError(500, f"Error renaming {tiledb_uri!r}: {e}")
             except tiledb.TileDBError as e:
