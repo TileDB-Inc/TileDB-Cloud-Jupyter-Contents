@@ -1,9 +1,9 @@
 """Functions that list contents on the remote server."""
 
+from typing import Any, List
+
 import tiledb.cloud
 import tornado.web
-
-from typing import Any, List
 
 from . import caching
 from . import models
@@ -207,6 +207,9 @@ def _all_notebooks_in(category: str) -> models.Model:
 
 
 def _maybe_update_last_modified(model: models.Model, notebook: Any) -> None:
-    nb_last_acc = models.to_utc(notebook.last_accessed)
-    md_last_mod = models.to_utc(model["last_modified"])
-    model["last_modified"] = max(nb_last_acc, md_last_mod)
+    model["last_modified"] = models.max_present(
+        (
+            models.to_utc(notebook.last_accessed),
+            models.to_utc(model.get("last_modified")),
+        )
+    )

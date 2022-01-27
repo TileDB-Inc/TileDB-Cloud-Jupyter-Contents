@@ -1,10 +1,10 @@
 """Dealing with models."""
 
 import datetime
-from typing import Dict, Any
 import posixpath
+from typing import Any, Dict, Iterable, Optional, TypeVar
 
-DUMMY_DATE = datetime.datetime.fromtimestamp(0, tz=datetime.timezone.utc)
+_T = TypeVar("_T")
 
 Model = Dict[str, Any]
 
@@ -17,8 +17,8 @@ def create(*, path: str, **kwargs: Any) -> Model:
         "name": posixpath.basename(path),
         "path": path,
         "writable": True,
-        "last_modified": DUMMY_DATE,
-        "created": DUMMY_DATE,
+        "last_modified": None,
+        "created": None,
         "content": None,
         "format": None,
         "mimetype": None,
@@ -27,12 +27,28 @@ def create(*, path: str, **kwargs: Any) -> Model:
     return model
 
 
-def to_utc(d: datetime.datetime) -> datetime.datetime:
+def to_utc(d: Optional[datetime.datetime]) -> Optional[datetime.datetime]:
     """Returns a version of d converted to UTC.
 
     If naive (no timezone), UTC will be added; if timezone-aware, the time
     will be converted.
     """
+    if not d:
+        return None
     if not d.tzinfo:
         return d.replace(tzinfo=datetime.timezone.utc)
     return d.astimezone(datetime.timezone.utc)
+
+
+def max_present(stuff: Iterable[Optional[_T]]) -> Optional[_T]:
+    """A version of ``max`` that filters out Nones.
+
+    Returns ``None`` if the sequence is empty.
+    """
+    try:
+        return max(  # type: ignore[type-var]
+            thing for thing in stuff if thing is not None
+        )
+    except ValueError:
+        # max raises this when given an empty sequence.
+        return None

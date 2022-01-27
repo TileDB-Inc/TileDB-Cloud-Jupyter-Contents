@@ -202,7 +202,7 @@ class TileDBCheckpoints(filecheckpoints.GenericFileCheckpoints, checkpoints.Chec
     # Immutable version of the only model we return ourselves.
     _BASE_MODEL = (
         ("id", "checkpoints-not-supported"),
-        ("last_modified", "models._DUMMY_DATE"),
+        # ("last_modified", "models._DUMMY_DATE"),
     )
 
     def create_file_checkpoint(self, content, format, path):
@@ -273,8 +273,9 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                 cloud["format"] = "json"
                 cloud["content"] = listings.all_notebooks()
 
-                cloud["last_modified"] = max(
-                    models.to_utc(cat["last_modified"]) for cat in cloud["content"])
+                cloud["last_modified"] = models.max_present(
+                    models.to_utc(cat.get("last_modified")) for cat in cloud["content"]
+                )
 
             return cloud
 
@@ -287,8 +288,8 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         return models.create(
             path=path,
             type="directory",
-            last_modified=models.DUMMY_DATE,
-            created=models.DUMMY_DATE,
+            # last_modified=models.DUMMY_DATE,
+            # created=models.DUMMY_DATE,
         )
 
     def get(self, path, content=True, type=None, format=None):
@@ -305,8 +306,9 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                             type="directory",
                             content=content,
                             format="json",
-                            last_modified=max(
-                                models.to_utc(cat["last_modified"]) for cat in cloud_content
+                            last_modified=models.max_present(
+                                models.to_utc(cat.get("last_modified"))
+                                for cat in cloud_content
                             ),
                         )
                     )
