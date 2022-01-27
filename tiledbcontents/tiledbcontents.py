@@ -1,6 +1,7 @@
 import base64
 import json
 import posixpath
+from typing import List
 
 import nbformat
 import numpy
@@ -297,14 +298,23 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         path = paths.strip(path)
         try:
             if not paths.is_remote(path):
+                # If this isn't a remote path, get the local file contents.
                 model = super().get(path, content, type, format)
                 if path == "" and content and _is_cloud_enabled():
+                    # If we're at the root, and there's an existing entry
+                    # named "cloud", remove it from the list.
+                    file_list: List[models.Model] = model["content"]
+                    for idx in range(len(file_list)):
+                        if file_list[idx]["path"] == "cloud":
+                            file_list.pop(idx)
+                            break
+
+                    # Put our own "cloud" folder in.
                     cloud_content = listings.all_notebooks()
-                    model["content"].append(
+                    file_list.append(
                         models.create(
                             path="cloud",
                             type="directory",
-                            content=content,
                             format="json",
                             last_modified=models.max_present(
                                 models.to_utc(cat.get("last_modified"))
