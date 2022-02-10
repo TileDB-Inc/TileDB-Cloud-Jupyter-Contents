@@ -1,18 +1,19 @@
 import base64
+import datetime
 import json
 import posixpath
 from typing import List
 
 import nbformat
+from notebook.services.contents import checkpoints
+from notebook.services.contents import filecheckpoints
+from notebook.services.contents import filemanager
+from notebook.services.contents import manager
 import numpy
 import tiledb
 import tiledb.cloud
 import tornado.web
 import traitlets
-from notebook.services.contents import checkpoints
-from notebook.services.contents import filecheckpoints
-from notebook.services.contents import filemanager
-from notebook.services.contents import manager
 
 from . import arrays
 from . import caching
@@ -336,12 +337,15 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
 
             if type == "notebook":
                 return self._notebook_from_array(path, content=content)
-            elif type == "file":
+            if type == "file":
                 return self._file_from_array(path, content=content, format=format)
-            elif type == "directory":
-                return self._directory_model_from_path(path, content=content)
-                # if model is not None:
-                #     model.
+            if type == "directory":
+                dir_model = self._directory_model_from_path(path, content=content)
+                if dir_model.get("last_modified") is None:
+                    dir_model["last_modified"] = models.to_utc(
+                        datetime.datetime.utcnow()
+                    )
+                return dir_model
         except Exception as e:
             raise tornado.web.HTTPError(
                 500, "Error opening notebook {}: {}".format(path, str(e))
