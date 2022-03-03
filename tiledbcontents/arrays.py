@@ -184,7 +184,7 @@ def create(
                     f"in {namespace} profile settings",
                 )
 
-            tiledb_uri_s3 = "tiledb://" + paths.join(namespace, s3_prefix, array_name)
+            tiledb_uri_s3 = "tiledb://" + namespace + "//nfs_data/" + array_name
 
             # Create the (empty) array on disk.
             tiledb.DenseArray.create(tiledb_uri_s3, schema)
