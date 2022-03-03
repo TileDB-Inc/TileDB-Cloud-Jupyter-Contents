@@ -550,7 +550,9 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                 options_json = json.loads(options)
                 model["name"] = options_json["name"]
                 model["tiledb:s3_prefix"] = options_json["s3_prefix"]
-                model["tiledb:s3_credentials"] = options_json["s3_credentials"]
+                # s3_credentials is not required, enterprise customers might not use cloud storage e.g. NFS
+                if 's3_credentials' in options_json:
+                    model["tiledb:s3_credentials"] = options_json["s3_credentials"]
             except Exception as e:
                 raise tornado.web.HTTPError(
                     400, u"Could not read TileDB user options: {}".format(e)
