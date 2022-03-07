@@ -341,10 +341,12 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                 return self._file_from_array(path, content=content, format=format)
             if type == "directory":
                 dir_model = self._directory_model_from_path(path, content=content)
-                if dir_model.get("last_modified") is None:
-                    dir_model["last_modified"] = models.to_utc(
-                        datetime.datetime.utcnow()
-                    )
+                # Jupyter chokes when either of these are missing or `null`
+                # in its returned object. We use a fake value if absent.
+                now = datetime.datetime.now(tz=datetime.timezone.utc)
+                for prop in ("last_modified", "created"):
+                    if dir_model.get(prop) is None:
+                        dir_model[prop] = now
                 return dir_model
         except Exception as e:
             raise tornado.web.HTTPError(
