@@ -200,7 +200,8 @@ def _all_notebooks_in(category: str) -> models.Model:
                 format="json",
                 last_modified=models.to_utc(notebook.last_accessed),
             )
-            nb_model["path"] = paths.join(category, model["path"] + paths.NOTEBOOK_EXT)
+            nb_model["path"] = paths.join(
+                category, nb_model["path"] + paths.NOTEBOOK_EXT)
             model["content"].append(nb_model)
             _maybe_update_last_modified(model, notebook)
     return model
