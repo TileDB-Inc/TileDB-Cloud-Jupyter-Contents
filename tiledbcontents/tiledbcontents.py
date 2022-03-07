@@ -340,10 +340,8 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
             if type == "file":
                 return self._file_from_array(path, content=content, format=format)
             if type == "directory":
-                dir_model = self._directory_model_from_path(path, content=content)
-                # Jupyter chokes when either of these are missing or `null`
-                # in its returned object. We use a fake value if absent.
-                return dir_model
+                return models.fill_in_dates(
+                    self._directory_model_from_path(path, content=content))
         except Exception as e:
             raise tornado.web.HTTPError(
                 500, "Error opening notebook {}: {}".format(path, str(e))
