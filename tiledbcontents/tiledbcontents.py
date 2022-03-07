@@ -336,9 +336,11 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                     type = self.guess_type(path, allow_directory=True)
 
             if type == "notebook":
-                return self._notebook_from_array(path, content=content)
+                return models.fill_in_dates(
+                    self._notebook_from_array(path, content=content))
             if type == "file":
-                return self._file_from_array(path, content=content, format=format)
+                return models.fill_in_dates(
+                    self._file_from_array(path, content=content, format=format))
             if type == "directory":
                 return models.fill_in_dates(
                     self._directory_model_from_path(path, content=content))
