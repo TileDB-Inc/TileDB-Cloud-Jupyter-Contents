@@ -343,10 +343,6 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                 dir_model = self._directory_model_from_path(path, content=content)
                 # Jupyter chokes when either of these are missing or `null`
                 # in its returned object. We use a fake value if absent.
-                now = datetime.datetime.now(tz=datetime.timezone.utc)
-                for prop in ("last_modified", "created"):
-                    if dir_model.get(prop) is None:
-                        dir_model[prop] = now
                 return dir_model
         except Exception as e:
             raise tornado.web.HTTPError(
@@ -587,7 +583,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         if model is None:
             model = {}
         model["tiledb:is_new"] = True
-        return super().new(model, path)
+        return models.fill_in_dates(super().new(model, path))
 
     def copy(self, from_path, to_path=None):
         from_path = paths.strip(from_path)
