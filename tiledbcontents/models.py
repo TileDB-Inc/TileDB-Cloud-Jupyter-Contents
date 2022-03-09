@@ -54,19 +54,25 @@ def max_present(stuff: Iterable[Optional[_T]]) -> Optional[_T]:
         return None
 
 
+_DUMMY_DATE = datetime.datetime(2014, 11, 1, 1, 14, 33, tzinfo=datetime.timezone.utc)
+"""A dummy date we use to fill in models where Jupyter requires one.
+
+The significance of this date is left as an exercise for the reader.
+"""
+
+
 def fill_in_dates(m: Model) -> Model:
     """Fills in the ``created`` and ``last_modified`` fields if empty.
 
     Many parts of Jupyter throw a temper tantrum if either the ``created`` field
     or the ``last_modified`` field of a model is empty.  If either is missing,
-    we replace it with now.
+    we replace it with a dummy.
 
     Modifies and returns the passed-in object, so you can use it like:
 
         return fill_in_dates(build_model())
     """
-    now = datetime.datetime.now(tz=datetime.timezone.utc)
     for prop in ("last_modified", "created"):
         if m.get(prop) is None:
-            m[prop] = now
+            m[prop] = _DUMMY_DATE
     return m
