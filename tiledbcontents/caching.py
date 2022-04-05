@@ -36,13 +36,18 @@ class Array:
     _cache: Dict[str, "Array"] = {}
 
     @classmethod
-    def from_cache(cls: Type["Array"], uri: str, *args, **kwargs) -> "Array":
+    def force_create(cls: Type["Array"], uri: str, *args, **kwargs) -> "Array":
+        cls._cache[uri] = cls(uri, *args, **kwargs)
+        return cls._cache[uri]
+
+    @classmethod
+    def from_cache(cls: Type["Array"], uri: str) -> "Array":
         """Fetches an Array from the cache, or constructs a new one if not present."""
         try:
             return cls._cache[uri]
         except KeyError:
             pass
-        cls._cache[uri] = cls(uri, *args, **kwargs)
+        cls._cache[uri] = cls(uri)
         return cls._cache[uri]
 
     @classmethod
