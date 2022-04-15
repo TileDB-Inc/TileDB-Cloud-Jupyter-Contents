@@ -36,13 +36,20 @@ class Array:
     _cache: Dict[str, "Array"] = {}
 
     @classmethod
-    def from_cache(cls: Type["Array"], uri: str, *args, **kwargs) -> "Array":
+    def force_create(cls: Type["Array"], uri: str, *args, **kwargs) -> "Array":
+        cls._cache[uri] = cls(uri, *args, **kwargs)
+        return cls._cache[uri]
+
+    @classmethod
+    def from_cache(cls: Type["Array"], uri: str) -> "Array":
         """Fetches an Array from the cache, or constructs a new one if not present."""
+        print(f"trying to open {uri}")
         try:
             return cls._cache[uri]
         except KeyError:
+            print(f"{uri} not in cache")
             pass
-        cls._cache[uri] = cls(uri, *args, **kwargs)
+        cls._cache[uri] = cls(uri)
         return cls._cache[uri]
 
     @classmethod
@@ -92,6 +99,7 @@ class Array:
     def cache_metadata(self):
         try:
             self.cached_meta = dict(self.array.meta.items())
+            print(f"cached metadata for {self.uri}: {self.cached_meta}")
         except Exception as e:
             raise tornado.web.HTTPError(
                 400, f"Error in Array::cache_metadata: {e}"

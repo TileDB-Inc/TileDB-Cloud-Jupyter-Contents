@@ -98,7 +98,7 @@ def write_bytes(
         if type is not None:
             arr.meta["type"] = type
 
-    caching.Array.from_cache(tiledb_uri, {"contents": contents})
+    caching.Array.force_create(tiledb_uri, {"contents": contents})
 
     return final_array_name
 
