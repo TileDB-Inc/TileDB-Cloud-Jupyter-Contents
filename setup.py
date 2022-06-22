@@ -22,8 +22,8 @@ REQUIRES = [
     "setuptools-scm-git-archive",
     "setuptools-scm>=1.5.4",
     "setuptools>=45",
-    "tiledb-cloud>=0.6.7",
-    "tiledb>=0.7.0",
+    "tiledb-cloud>=0.7.44",
+    "tiledb>=0.16.1",
     "tornado",
     "traitlets",
 ]
