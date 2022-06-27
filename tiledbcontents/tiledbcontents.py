@@ -1,5 +1,4 @@
 import base64
-import datetime
 import json
 import posixpath
 from typing import List
@@ -42,17 +41,27 @@ class TileDBContents(manager.ContentsManager):
         self.check_and_sign(nb_contents, path)
         file_contents = numpy.array(bytearray(json.dumps(model["content"]), "utf-8"))
 
-        final_name = arrays.write_bytes(
-            path,
-            file_contents,
-            mimetype=model.get("mimetype"),
-            format=model.get("format"),
-            type="notebook",
-            s3_prefix=model.get("tiledb:s3_prefix", None),
-            s3_credentials=model.get("tiledb:s3_credentials", None),
-            is_user_defined_name="name" in model,
-            is_new=model.get("tiledb:is_new", False),
-        )
+        try:
+            final_name = arrays.write_bytes(
+                path,
+                file_contents,
+                mimetype=model.get("mimetype"),
+                format=model.get("format"),
+                type="notebook",
+                s3_prefix=model.get("tiledb:s3_prefix", None),
+                s3_credentials=model.get("tiledb:s3_credentials", None),
+                is_user_defined_name="name" in model,
+                is_new=model.get("tiledb:is_new", False),
+            )
+        except tiledb.TileDBError as tdbe:
+            raise tornado.web.HTTPError(
+                500, f"Error saving notebook to TileDB array: {tdbe}"
+            ) from tdbe
+        except Exception as ex:
+            raise tornado.web.HTTPError(
+                500, f"Unexpected error saving notebook: {ex}"
+            ) from ex
+
 
         self.validate_notebook_model(model)
         return final_name, model.get("message")
