@@ -22,7 +22,7 @@ Next adjust your jupyter config usually `/etc/jupyter/jupyter_notebook_config.py
 
 Add the following line:
 ```
-c.NotebookApp.contents_manager_class = "tiledbcontents.TileDBCloudContentsManager"
+c.ServerApp.contents_manager_class = "tiledbcontents.AsyncTileDBCloudContentsManager"
 ```
 
 ## Local testing
@@ -69,13 +69,13 @@ This will store a credential in your home directory that will be used by default
 when accessing TileDB Cloud services through the API.
 
 The only remaining step is to launch Jupyter and configure it to use the
-`TileDBCloudContentsManager` class:
+`AsyncTileDBCloudContentsManager` class:
 
 ```
-$ jupyter notebook --NotebookApp.contents_manager_class=tiledbcontents.TileDBCloudContentsManager
+$ jupyter lab --ServerApp.contents_manager_class=tiledbcontents.TileDBCloudContentsManager
 ```
 
-This will run a local test Jupyter notebook server without changing your default
+This will run a local test Jupyter lab server without changing your default
 Jupyter configuration. You can make this your default by following the
 instructions in "Usage" above.
 

@@ -16,8 +16,8 @@ NAME = "tiledbcontents"
 # http://pypi.python.org/pypi/setuptools
 
 REQUIRES = [
+    "jupyter_server",
     "nbformat",
-    "notebook",
     "numpy",
     "setuptools-scm-git-archive",
     "setuptools-scm>=1.5.4",
