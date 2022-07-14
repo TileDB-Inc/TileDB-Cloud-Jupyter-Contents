@@ -1,13 +1,13 @@
+import asyncio
 import base64
+import functools
 import json
 import posixpath
-from typing import List
+from typing import Any, Callable, List, TypeVar
 
 import nbformat
-from notebook.services.contents import checkpoints
-from notebook.services.contents import filecheckpoints
-from notebook.services.contents import filemanager
-from notebook.services.contents import manager
+from jupyter_server.services.contents import filecheckpoints
+from jupyter_server.services.contents import filemanager
 import numpy
 import tiledb
 import tiledb.cloud
@@ -25,264 +25,25 @@ NBFORMAT_VERSION = 4
 NOTEBOOK_MIME = "application/x-ipynb+json"
 
 
-class TileDBContents(manager.ContentsManager):
-    """
-    A general class for TileDB Contents, parent of the actual contents class and checkpoints
-    """
-
-    def _save_notebook_tiledb(self, path: str, model: models.Model):
-        """
-        Save a notebook to tiledb array
-        :param model: model notebook
-        :param uri: URI of notebook
-        :return: any messages
-        """
-        nb_contents = nbformat.from_dict(model["content"])
-        self.check_and_sign(nb_contents, path)
-        file_contents = numpy.array(bytearray(json.dumps(model["content"]), "utf-8"))
-
-        try:
-            final_name = arrays.write_bytes(
-                path,
-                file_contents,
-                mimetype=model.get("mimetype"),
-                format=model.get("format"),
-                type="notebook",
-                s3_prefix=model.get("tiledb:s3_prefix", None),
-                s3_credentials=model.get("tiledb:s3_credentials", None),
-                is_user_defined_name="name" in model,
-                is_new=model.get("tiledb:is_new", False),
-            )
-        except tiledb.TileDBError as tdbe:
-            raise tornado.web.HTTPError(
-                500, f"Error saving notebook to TileDB array: {tdbe}"
-            ) from tdbe
-        except Exception as ex:
-            raise tornado.web.HTTPError(
-                500, f"Unexpected error saving notebook: {ex}"
-            ) from ex
-
-
-        self.validate_notebook_model(model)
-        return final_name, model.get("message")
-
-    def _notebook_from_array(self, path, content=True):
-        """
-        Build a notebook model from database record.
-        """
-        model = models.create(path=path, type="notebook")
-        if content:
-            tiledb_uri = paths.tiledb_uri_from_path(path)
-            try:
-                info = tiledb.cloud.array.info(tiledb_uri)
-                model["last_modified"] = models.to_utc(info.last_accessed)
-                if "write" not in info.allowed_actions:
-                    model["writable"] = False
-
-                arr = caching.Array.from_cache(tiledb_uri)
-
-                nb_content = []
-                file_content = arr.read()
-                if file_content is not None:
-                    nb_content = nbformat.reads(
-                        file_content["contents"].tostring().decode("utf-8", "backslashreplace"),
-                        as_version=NBFORMAT_VERSION,
-                    )
-                    self.mark_trusted_cells(nb_content, path)
-                model["format"] = "json"
-                model["content"] = nb_content
-                self.validate_notebook_model(model)
-            except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-                raise tornado.web.HTTPError(400, "Error fetching notebook info: {}".format(str(e)))
-            except tiledb.TileDBError as e:
-                raise tornado.web.HTTPError(
-                    400,
-                    "Error fetching notebook: {}".format(str(e)),
-                )
-            except Exception as e:
-                raise tornado.web.HTTPError(
-                    400,
-                    "Error fetching notebook: {}".format(str(e)),
-                )
-
-        return model
-
-    def _file_from_array(self, path, content=True, format=None):
-        """
-        Build a notebook model from database record.
-        """
-        model = models.create(path=path, type="file")
-
-        if content:
-            tiledb_uri = paths.tiledb_uri_from_path(path)
-            try:
-                info = tiledb.cloud.array.info(tiledb_uri)
-                model["last_modified"] = models.to_utc(info.last_accessed)
-                if "write" not in info.allowed_actions:
-                    model["writable"] = False
-
-                arr = caching.Array.from_cache(tiledb_uri)
-
-                # Use cached meta, only file_size is ever updated
-                meta = arr.cached_meta
-                # Get metadata information
-                if "mimetype" in meta:
-                    model["mimetype"] = meta["mimetype"]
-                if "format" in meta:
-                    model["format"] = meta["format"]
-                else:
-                    model["format"] = format
-
-                if "type" in meta:
-                    model["type"] = meta["type"]
-
-                file_content = arr.read()
-                if file_content is not None:
-                    nb_content = file_content["contents"]
-                    model["content"] = nb_content
-                else:
-                    model["content"] = []
-
-                if (
-                    "type" in meta
-                    and meta["type"] == "notebook"
-                    and file_content is not None
-                ):
-                    nb_content = nbformat.reads(
-                        file_content["contents"].tostring().decode("utf-8", "backslashreplace"),
-                        as_version=NBFORMAT_VERSION,
-                    )
-                    self.mark_trusted_cells(nb_content, path)
-                    model["format"] = "json"
-                    model["content"] = nb_content
-                    self.validate_notebook_model(model)
-            except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-                raise tornado.web.HTTPError(500, "Error fetching file info: {}".format(str(e)))
-            except tiledb.TileDBError as e:
-                raise tornado.web.HTTPError(
-                    500,
-                    "Error fetching file: {}".format(str(e)),
-                )
-            except Exception as e:
-                raise tornado.web.HTTPError(
-                    400,
-                    "Error fetching file: {}".format(str(e)),
-                )
-
-        return model
-
-    def guess_type(self, path, allow_directory=True):
-        """
-        Guess the type of a file.
-
-        Taken from https://github.com/danielfrg/s3contents/blob/master/s3contents/genericmanager.py
-
-        If allow_directory is False, don't consider the possibility that the
-        file is a directory.
-        Parameters
-        ----------
-            obj: s3.Object or string
-        """
-        path = paths.strip(path)
-        if paths.is_remote(path):
-            if paths.is_remote_dir(path):
-                return "directory"
-            else:
-                if path.endswith(paths.NOTEBOOK_EXT):
-                    path = path[: -1 * len(paths.NOTEBOOK_EXT)]
-                try:
-                    tiledb_uri = paths.tiledb_uri_from_path(path)
-                    return arrays.fetch_type(tiledb_uri)
-                except Exception:
-                    return "directory"
-
-        if path.endswith(".ipynb"):
-            return "notebook"
-        elif allow_directory and self.dir_exists(path):
-            return "directory"
-        else:
-            return "file"
-
-
-class TileDBCheckpoints(filecheckpoints.GenericFileCheckpoints, checkpoints.Checkpoints):
-    """
-    A wrapper of a class which will in the future support checkpoints by time traveling.
-    It inherits from GenericFileCheckpoints for local notebooks
-    """
-
-    # Immutable version of the only model we return ourselves.
-    _BASE_MODEL = (
-        ("id", "checkpoints-not-supported"),
-        # ("last_modified", "models._DUMMY_DATE"),
-    )
-
-    def create_file_checkpoint(self, content, format, path):
-        """ -> checkpoint model"""
-        if not paths.is_remote(path):
-            return super().create_file_checkpoint(content, format, path)
-
-        return dict(self._BASE_MODEL)
-
-    def create_notebook_checkpoint(self, nb, path):
-        """ -> checkpoint model"""
-        if not paths.is_remote(path):
-            return super().create_notebook_checkpoint(nb, path)
-
-        return dict(self._BASE_MODEL)
-
-    def get_file_checkpoint(self, checkpoint_id, path):
-        """ -> {'type': 'file', 'content': <str>, 'format': {'text', 'base64'}}"""
-        if not paths.is_remote(path):
-            return super().get_file_checkpoint(checkpoint_id, path)
-
-    def get_notebook_checkpoint(self, checkpoint_id, path):
-        """ -> {'type': 'notebook', 'content': <output of nbformat.read>}"""
-        if not paths.is_remote(path):
-            return super().get_notebook_checkpoint(checkpoint_id, path)
-
-    def delete_checkpoint(self, checkpoint_id, path):
-        """deletes a checkpoint for a file"""
-        if not paths.is_remote(path):
-            return super().delete_checkpoint(checkpoint_id, path)
-
-    def list_checkpoints(self, path):
-        """returns a list of checkpoint models for a given file,
-        default just does one per file
-        """
-        path = paths.strip(path)
-        if not paths.is_remote(path):
-            return super().list_checkpoints(path)
-        return []
-
-    def rename_checkpoint(self, checkpoint_id, old_path, new_path):
-        """renames checkpoint from old path to new path"""
-        if not paths.is_remote(old_path):
-            return super().rename_checkpoint(checkpoint_id, old_path, new_path)
-
-
-class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager, traitlets.HasTraits):
+class AsyncTileDBCloudContentsManager(
+    filemanager.AsyncFileContentsManager, traitlets.HasTraits
+):
     # This makes the checkpoints get saved on this directory
     root_dir = traitlets.Unicode("./", config=True)
 
+    @traitlets.default("checkpoints_class")
     def _checkpoints_class_default(self):
-        """
-        Set checkpoint class to custom checkpoint class
-        :return:
-        """
-        return TileDBCheckpoints
+        return AsyncTileDBCheckpoints
 
-    def _directory_model_from_path(self, path, *, content: bool = False):
-        # if self.vfs.is_dir(path):
-        #     lstat = self.fs.lstat(path)
-        #     if "ST_MTIME" in lstat and lstat["ST_MTIME"]:
+    async def _dir_model(self, path, content: bool = False):
         if not paths.is_remote(path) and not paths.is_remote_dir(path):
-            return self._dir_model(path, content=content)
+            return await super()._dir_model(path, content)
 
         if path == "cloud":
             cloud = models.create(path="cloud", type="directory")
             if content:
                 cloud["format"] = "json"
-                cloud["content"] = listings.all_notebooks()
+                cloud["content"] = await _call(listings.all_notebooks)
 
                 cloud["last_modified"] = models.max_present(
                     models.to_utc(cat.get("last_modified")) for cat in cloud["content"]
@@ -293,8 +54,10 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         category, namespace = paths.category_namespace(path)
         if category:
             if namespace:
-                return listings.namespace(category, namespace, content=content)
-            return listings.category(category, content=content)
+                return await _call(
+                    listings.namespace, category, namespace, content=content
+                )
+            return await _call(listings.category, category, content=content)
 
         return models.create(
             path=path,
@@ -303,14 +66,14 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
             # created=models.DUMMY_DATE,
         )
 
-    def get(self, path, content=True, type=None, format=None):
+    async def get(self, path, content=True, type=None, format=None):
         """Get a file or directory model."""
         path = paths.strip(path)
         try:
             if not paths.is_remote(path):
                 # If this isn't a remote path, get the local file contents.
-                model = super().get(path, content, type, format)
-                if path == "" and content and _is_cloud_enabled():
+                model = await super().get(path, content, type, format)
+                if path == "" and content and await _call(_is_cloud_enabled):
                     # If we're at the root, and there's an existing entry
                     # named "cloud", remove it from the list.
                     file_list: List[models.Model] = model["content"]
@@ -320,7 +83,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                             break
 
                     # Put our own "cloud" folder in.
-                    cloud_content = listings.all_notebooks()
+                    cloud_content = await _call(listings.all_notebooks)
                     file_list.append(
                         models.create(
                             path="cloud",
@@ -342,23 +105,26 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                 if paths.is_remote_dir(path):
                     type = "directory"
                 else:
-                    type = self.guess_type(path, allow_directory=True)
+                    type = await self.guess_type(path, allow_directory=True)
 
             if type == "notebook":
                 return models.fill_in_dates(
-                    self._notebook_from_array(path, content=content))
+                    await self._notebook_from_array(path, content=content)
+                )
             if type == "file":
                 return models.fill_in_dates(
-                    self._file_from_array(path, content=content, format=format))
+                    await self._file_from_array(path, content=content, format=format)
+                )
             if type == "directory":
                 return models.fill_in_dates(
-                    self._directory_model_from_path(path, content=content))
+                    await self._dir_model(path, content=content)
+                )
         except Exception as e:
             raise tornado.web.HTTPError(
                 500, "Error opening notebook {}: {}".format(path, str(e))
             )
 
-    def save(self, model, path=""):
+    async def save(self, model, path=""):
         """
         Save a file or directory model to path.
         Should return the saved model with no content.  Save implementations
@@ -372,40 +138,48 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
             raise tornado.web.HTTPError(400, "No file type provided")
 
         if "content" not in model and model_type != "directory":
-            raise tornado.web.HTTPError(400, u"No file content provided")
+            raise tornado.web.HTTPError(400, "No file content provided")
 
         if model_type not in ("directory", "file", "notebook"):
-            raise tornado.web.HTTPError(400, "Unhandled contents type: %s" % model["type"])
+            raise tornado.web.HTTPError(
+                400, "Unhandled contents type: %s" % model["type"]
+            )
 
         if not paths.is_remote(path):
             if model.get("tiledb:is_new"):
                 # Since we don't try to increment the filename in self.new(),
                 # do it here for newly-created files.
                 dir, name = posixpath.split(path)
-                incremented = self.increment_filename(name, dir, insert='-')
+                incremented = await self.increment_filename(name, dir, insert="-")
                 path = paths.join(dir, incremented)
-            return super().save(model, path)
+            return await super().save(model, path)
 
         if path.endswith(paths.NOTEBOOK_EXT):
-            path = path[:-len(paths.NOTEBOOK_EXT)]
+            path = path[: -len(paths.NOTEBOOK_EXT)]
             if model["type"] == "file":
                 try:
                     _try_convert_file_to_notebook(model)
                 except ValueError as ve:
-                    raise tornado.web.HTTPError(400, f"Cannot parse Jupyter notebook: {ve}")
+                    raise tornado.web.HTTPError(
+                        400, f"Cannot parse Jupyter notebook: {ve}"
+                    )
 
         self.run_pre_save_hook(model=model, path=path)
         validation_message = None
         try:
             if model["type"] == "notebook":
-                final_name, validation_message = self._save_notebook_tiledb(path, model)
+                final_name, validation_message = await self._save_notebook_tiledb(
+                    path, model
+                )
                 if final_name is not None:
                     parts = paths.split(path)
                     parts_length = len(parts)
                     parts[parts_length - 1] = final_name
                     path = paths.join(*parts)
             elif model["type"] == "file":
-                raise tornado.web.HTTPError(400, "Only .ipynb files may be created in the cloud.")
+                raise tornado.web.HTTPError(
+                    400, "Only .ipynb files may be created in the cloud."
+                )
             else:
                 if paths.is_remote(path):
                     raise tornado.web.HTTPError(
@@ -420,12 +194,12 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
             self.log.error("Error while saving file: %s %s", path, e, exc_info=True)
             raise
 
-        model = self.get(path, type=model["type"], content=False)
+        model = await self.get(path, type=model["type"], content=False)
         if validation_message is not None:
             model["message"] = validation_message
         return model
 
-    def delete_file(self, path):
+    async def delete_file(self, path):
         """Delete the file or directory at path."""
         path = paths.strip(path)
         if paths.is_remote(path):
@@ -436,7 +210,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
             tiledb_uri = paths.tiledb_uri_from_path(path)
             try:
                 caching.Array.purge(tiledb_uri)
-                return tiledb.cloud.array.delete_array(tiledb_uri)
+                return await _call(tiledb.cloud.array.delete_array, tiledb_uri)
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
                 raise tornado.web.HTTPError(
                     500, f"Error deregistering {tiledb_uri!r}: {e}"
@@ -446,10 +220,9 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                     500,
                     str(e),
                 )
-        else:
-            return super().delete_file(path)
+        return await super().delete_file(path)
 
-    def rename_file(self, old_path, new_path):
+    async def rename_file(self, old_path, new_path):
         """Rename a file or directory."""
         old_path = paths.strip(old_path)
         new_path = paths.strip(new_path)
@@ -465,7 +238,9 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
 
             try:
                 caching.Array.purge(tiledb_uri)
-                return tiledb.cloud.notebook.rename_notebook(tiledb_uri, array_name_new)
+                return await _call(
+                    tiledb.cloud.notebook.rename_notebook, tiledb_uri, array_name_new
+                )
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
                 raise tornado.web.HTTPError(500, f"Error renaming {tiledb_uri!r}: {e}")
             except tiledb.TileDBError as e:
@@ -473,13 +248,12 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                     500,
                     str(e),
                 )
-        else:
-            return super().rename_file(old_path, new_path)
+        return await super().rename_file(old_path, new_path)
 
     # ContentsManager API part 2: methods that have usable default
     # implementations, but can be overridden in subclasses.
 
-    def dir_exists(self, path):
+    async def dir_exists(self, path):
         """Does a directory exist at the given path?
         Like os.path.isdir
         Override this method in subclasses.
@@ -496,9 +270,9 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         if paths.is_remote_dir(path):
             return True
 
-        return super().dir_exists(path)
+        return await super().dir_exists(path)
 
-    def is_hidden(self, path):
+    async def is_hidden(self, path):
         """Is path a hidden directory or file?
         Parameters
         ----------
@@ -514,9 +288,9 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         if paths.is_remote(path):
             return False
 
-        return super().is_hidden(path)
+        return await super().is_hidden(path)
 
-    def file_exists(self, path=""):
+    async def file_exists(self, path=""):
         """Does a file exist at the given path?
         Like os.path.isfile
         Override this method in subclasses.
@@ -533,10 +307,10 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         if paths.is_remote(path):
             if path.endswith(paths.NOTEBOOK_EXT):
                 path = path[: -1 * len(paths.NOTEBOOK_EXT)]
-            return arrays.exists(path)
-        return super().file_exists(path)
+            return await _call(arrays.exists, path)
+        return await super().file_exists(path)
 
-    def new_untitled(self, path="", type="", ext="", options=""):
+    async def new_untitled(self, path="", type="", ext="", options=""):
         """Create a new untitled file or directory in path
         path must be a directory
         File extension can be specified.
@@ -569,7 +343,7 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
                     pass
             except Exception as e:
                 raise tornado.web.HTTPError(
-                    400, u"Could not read TileDB user options: {}".format(e)
+                    400, "Could not read TileDB user options: {}".format(e)
                 )
 
         if model["type"] == "directory":
@@ -580,31 +354,33 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         elif model["type"] == "file":
             prefix = self.untitled_file
         else:
-            raise tornado.web.HTTPError(400, "Unexpected model type: %r" % model["type"])
+            raise tornado.web.HTTPError(
+                400, "Unexpected model type: %r" % model["type"]
+            )
 
         # We don't do the "increment" step that the default ContentsManager does
         # because we generate a random suffix or increment the filename in
         # _save_notebook_tiledb.
         full_path = paths.join(path, prefix + ext)
-        return self.new(model, full_path)
+        return await self.new(model, full_path)
 
-    def new(self, model=None, path=""):
+    async def new(self, model=None, path=""):
         if model is None:
             model = {}
         model["tiledb:is_new"] = True
-        return models.fill_in_dates(super().new(model, path))
+        return models.fill_in_dates(await super().new(model, path))
 
-    def copy(self, from_path, to_path=None):
+    async def copy(self, from_path, to_path=None):
         from_path = paths.strip(from_path)
         model = self.get(from_path)
-        model.pop('path', None)
+        model.pop("path", None)
         if not to_path:
             # A missing to_path implies that we should create a duplicate
             # in the same location (with a new name).
             to_path = from_path
         else:
             to_path = paths.strip(to_path)
-            if self.dir_exists(to_path):
+            if await self.dir_exists(to_path):
                 # to_path may be a directory, in which case we copy
                 # the model to an identically-named entry in that directory.
                 from_parts = paths.split(from_path)
@@ -614,7 +390,245 @@ class TileDBCloudContentsManager(TileDBContents, filemanager.FileContentsManager
         # As in new_untitled, we don't increment our filenames because they are
         # dedup'd in _save_notebook_tiledb.
 
-        return self.new(model, to_path)
+        return await self.new(model, to_path)
+
+    async def _save_notebook_tiledb(self, path: str, model: models.Model):
+        """
+        Save a notebook to tiledb array
+        :param model: model notebook
+        :param uri: URI of notebook
+        :return: any messages
+        """
+        nb_contents = nbformat.from_dict(model["content"])
+        self.check_and_sign(nb_contents, path)
+        file_contents = numpy.array(bytearray(json.dumps(model["content"]), "utf-8"))
+
+        try:
+            final_name = await _call(
+                arrays.write_bytes,
+                path,
+                file_contents,
+                mimetype=model.get("mimetype"),
+                format=model.get("format"),
+                type="notebook",
+                s3_prefix=model.get("tiledb:s3_prefix", None),
+                s3_credentials=model.get("tiledb:s3_credentials", None),
+                is_user_defined_name="name" in model,
+                is_new=model.get("tiledb:is_new", False),
+            )
+        except tiledb.TileDBError as tdbe:
+            raise tornado.web.HTTPError(
+                500, f"Error saving notebook to TileDB array: {tdbe}"
+            ) from tdbe
+        except Exception as ex:
+            raise tornado.web.HTTPError(
+                500, f"Unexpected error saving notebook: {ex}"
+            ) from ex
+
+        self.validate_notebook_model(model)
+        return final_name, model.get("message")
+
+    async def _notebook_from_array(self, path, content=True):
+        """
+        Build a notebook model from database record.
+        """
+        model = models.create(path=path, type="notebook")
+        if content:
+            tiledb_uri = paths.tiledb_uri_from_path(path)
+            try:
+                info = await _call(tiledb.cloud.array.info, tiledb_uri)
+                model["last_modified"] = models.to_utc(info.last_accessed)
+                if "write" not in info.allowed_actions:
+                    model["writable"] = False
+
+                arr = await _call(caching.Array.from_cache, tiledb_uri)
+
+                nb_content = []
+                file_content = await _call(arr.read)
+                if file_content is not None:
+                    nb_content = nbformat.reads(
+                        file_content["contents"]
+                        .tostring()
+                        .decode("utf-8", "backslashreplace"),
+                        as_version=NBFORMAT_VERSION,
+                    )
+                    self.mark_trusted_cells(nb_content, path)
+                model["format"] = "json"
+                model["content"] = nb_content
+                self.validate_notebook_model(model)
+            except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+                raise tornado.web.HTTPError(
+                    400, "Error fetching notebook info: {}".format(str(e))
+                )
+            except tiledb.TileDBError as e:
+                raise tornado.web.HTTPError(
+                    400,
+                    "Error fetching notebook: {}".format(str(e)),
+                )
+            except Exception as e:
+                raise tornado.web.HTTPError(
+                    400,
+                    "Error fetching notebook: {}".format(str(e)),
+                )
+
+        return model
+
+    async def _file_from_array(self, path, content=True, format=None):
+        """
+        Build a notebook model from database record.
+        """
+        model = models.create(path=path, type="file")
+
+        if content:
+            tiledb_uri = paths.tiledb_uri_from_path(path)
+            try:
+                info = await _call(tiledb.cloud.array.info, tiledb_uri)
+                model["last_modified"] = models.to_utc(info.last_accessed)
+                if "write" not in info.allowed_actions:
+                    model["writable"] = False
+
+                arr = await _call(caching.Array.from_cache, tiledb_uri)
+
+                # Use cached meta, only file_size is ever updated
+                meta = arr.cached_meta
+                # Get metadata information
+                if "mimetype" in meta:
+                    model["mimetype"] = meta["mimetype"]
+                if "format" in meta:
+                    model["format"] = meta["format"]
+                else:
+                    model["format"] = format
+
+                if "type" in meta:
+                    model["type"] = meta["type"]
+
+                file_content = arr.read()
+                if file_content is not None:
+                    nb_content = file_content["contents"]
+                    model["content"] = nb_content
+                else:
+                    model["content"] = []
+
+                if (
+                    "type" in meta
+                    and meta["type"] == "notebook"
+                    and file_content is not None
+                ):
+                    nb_content = nbformat.reads(
+                        file_content["contents"]
+                        .tostring()
+                        .decode("utf-8", "backslashreplace"),
+                        as_version=NBFORMAT_VERSION,
+                    )
+                    self.mark_trusted_cells(nb_content, path)
+                    model["format"] = "json"
+                    model["content"] = nb_content
+                    self.validate_notebook_model(model)
+            except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+                raise tornado.web.HTTPError(
+                    500, "Error fetching file info: {}".format(str(e))
+                )
+            except tiledb.TileDBError as e:
+                raise tornado.web.HTTPError(
+                    500,
+                    "Error fetching file: {}".format(str(e)),
+                )
+            except Exception as e:
+                raise tornado.web.HTTPError(
+                    400,
+                    "Error fetching file: {}".format(str(e)),
+                )
+
+        return model
+
+    async def guess_type(self, path, allow_directory=True):
+        """
+        Guess the type of a file.
+
+        Taken from https://github.com/danielfrg/s3contents/blob/master/s3contents/genericmanager.py
+
+        If allow_directory is False, don't consider the possibility that the
+        file is a directory.
+        Parameters
+        ----------
+            obj: s3.Object or string
+        """
+        path = paths.strip(path)
+        if paths.is_remote(path):
+            if paths.is_remote_dir(path):
+                return "directory"
+            else:
+                if path.endswith(paths.NOTEBOOK_EXT):
+                    path = path[: -1 * len(paths.NOTEBOOK_EXT)]
+                try:
+                    tiledb_uri = paths.tiledb_uri_from_path(path)
+                    return await _call(arrays.fetch_type, tiledb_uri)
+                except Exception:
+                    return "directory"
+
+        if path.endswith(".ipynb"):
+            return "notebook"
+        if allow_directory and await self.dir_exists(path):
+            return "directory"
+        return "file"
+
+
+class AsyncTileDBCheckpoints(filecheckpoints.AsyncGenericFileCheckpoints):
+    """
+    A wrapper of a class which will in the future support checkpoints by time traveling.
+    It inherits from AsyncGenericFileCheckpoints to checkpoint local files.
+    """
+
+    # Immutable version of the only model we return ourselves.
+    _BASE_MODEL = (
+        ("id", "checkpoints-not-supported"),
+        # ("last_modified", "models._DUMMY_DATE"),
+    )
+
+    async def create_file_checkpoint(self, content, format, path):
+        """ -> checkpoint model"""
+        if paths.is_remote(path):
+            return dict(self._BASE_MODEL)
+        return await super().create_file_checkpoint(content, format, path)
+
+    async def create_notebook_checkpoint(self, nb, path):
+        """ -> checkpoint model"""
+        if paths.is_remote(path):
+            return dict(self._BASE_MODEL)
+        return await super().create_notebook_checkpoint(nb, path)
+
+    async def get_file_checkpoint(self, checkpoint_id, path):
+        """ -> {'type': 'file', 'content': <str>, 'format': {'text', 'base64'}}"""
+        if paths.is_remote(path):
+            self.no_such_checkpoint(path, checkpoint_id)
+        return super().get_file_checkpoint(checkpoint_id, path)
+
+    async def get_notebook_checkpoint(self, checkpoint_id, path):
+        """ -> {'type': 'notebook', 'content': <output of nbformat.read>}"""
+        if paths.is_remote(path):
+            self.no_such_checkpoint(path, checkpoint_id)
+        return super().get_notebook_checkpoint(checkpoint_id, path)
+
+    async def delete_checkpoint(self, checkpoint_id, path):
+        """deletes a checkpoint for a file"""
+        if paths.is_remote(path):
+            self.no_such_checkpoint(path, checkpoint_id)
+        return super().delete_checkpoint(checkpoint_id, path)
+
+    async def list_checkpoints(self, path):
+        """returns a list of checkpoint models for a given file,
+        default just does one per file
+        """
+        path = paths.strip(path)
+        if paths.is_remote(path):
+            return []
+        return super().list_checkpoints(path)
+
+    async def rename_checkpoint(self, checkpoint_id, old_path, new_path):
+        """renames checkpoint from old path to new path"""
+        if paths.is_remote(old_path):
+            return []
+        return super().rename_checkpoint(checkpoint_id, old_path, new_path)
 
 
 def _try_convert_file_to_notebook(model):
@@ -665,3 +679,12 @@ def _is_cloud_enabled():
         )
 
     return False
+
+
+_R = TypeVar("_R")
+
+
+async def _call(__fn: Callable[..., _R], *args: Any, **kwargs: Any) -> _R:
+    """Calls ``__fn(*args, **kwargs)`` on an executor as to not block."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, functools.partial(__fn, *args, **kwargs))
