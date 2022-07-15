@@ -601,19 +601,19 @@ class AsyncTileDBCheckpoints(filecheckpoints.AsyncGenericFileCheckpoints):
         """ -> {'type': 'file', 'content': <str>, 'format': {'text', 'base64'}}"""
         if paths.is_remote(path):
             self.no_such_checkpoint(path, checkpoint_id)
-        return super().get_file_checkpoint(checkpoint_id, path)
+        return await super().get_file_checkpoint(checkpoint_id, path)
 
     async def get_notebook_checkpoint(self, checkpoint_id, path):
         """ -> {'type': 'notebook', 'content': <output of nbformat.read>}"""
         if paths.is_remote(path):
             self.no_such_checkpoint(path, checkpoint_id)
-        return super().get_notebook_checkpoint(checkpoint_id, path)
+        return await super().get_notebook_checkpoint(checkpoint_id, path)
 
     async def delete_checkpoint(self, checkpoint_id, path):
         """deletes a checkpoint for a file"""
         if paths.is_remote(path):
             self.no_such_checkpoint(path, checkpoint_id)
-        return super().delete_checkpoint(checkpoint_id, path)
+        return await super().delete_checkpoint(checkpoint_id, path)
 
     async def list_checkpoints(self, path):
         """returns a list of checkpoint models for a given file,
@@ -622,13 +622,13 @@ class AsyncTileDBCheckpoints(filecheckpoints.AsyncGenericFileCheckpoints):
         path = paths.strip(path)
         if paths.is_remote(path):
             return []
-        return super().list_checkpoints(path)
+        return await super().list_checkpoints(path)
 
     async def rename_checkpoint(self, checkpoint_id, old_path, new_path):
         """renames checkpoint from old path to new path"""
         if paths.is_remote(old_path):
             return []
-        return super().rename_checkpoint(checkpoint_id, old_path, new_path)
+        return await super().rename_checkpoint(checkpoint_id, old_path, new_path)
 
 
 def _try_convert_file_to_notebook(model):
