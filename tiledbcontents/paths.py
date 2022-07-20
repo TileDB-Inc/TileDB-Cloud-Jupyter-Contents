@@ -67,6 +67,8 @@ def is_remote(path: str) -> bool:
     True
     >>> is_remote("my/home/directory")
     False
+    >>> is_remote("/cloud/lol")
+    True
     """
     return split(strip(path))[0] == "cloud"
 
@@ -147,7 +149,7 @@ def split(path: str) -> List[str]:
     >>> split("")
     ['']
     """
-    return path.split(posixpath.sep)
+    return strip(path).split(posixpath.sep)
 
 
 def strip(path: str) -> str:

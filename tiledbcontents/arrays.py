@@ -26,28 +26,22 @@ def exists(path: str) -> bool:
     return False
 
 
-def fetch_type(uri: str) -> Optional[str]:
+async def fetch_type(uri: str) -> Optional[str]:
     try:
         arr = caching.Array.from_cache(uri)
+        meta = await arr.meta()
     except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
         raise tornado.web.HTTPError(500, f"Error getting type: {e}") from e
     except tiledb.TileDBError as e:
         raise tornado.web.HTTPError(500, str(e)) from e
     except Exception as e:
         raise tornado.web.HTTPError(400, f"Error getting file type: {e}") from e
-    try:
-        return arr.cached_meta["type"]
-    except KeyError:
-        return None
+    return meta.get("type")
 
 
-def current_milli_time() -> int:
-    return round(time.time() * 1000)
-
-
-def write_bytes(
+async def write_data(
     path: str,
-    contents: numpy.ndarray,
+    contents: str,
     *,
     mimetype: Optional[str] = None,
     format: Optional[str] = None,
@@ -76,8 +70,8 @@ def write_bytes(
     tiledb_uri = paths.tiledb_uri_from_path(path)
     final_array_name = None
     if is_new:
-        # if not arrays.exists(uri):
-        tiledb_uri, final_array_name = create(
+        tiledb_uri, final_array_name = await caching.call(
+            create,
             tiledb_uri,
             retry=5,
             s3_prefix=s3_prefix,
@@ -85,20 +79,8 @@ def write_bytes(
             is_user_defined_name=is_user_defined_name,
         )
 
-    # TODO: remove calling tiledb.open with timestamp when related TileDB Core bug is fixed
-    # Calling tiledb.open with timestamp should not be needed because TileDB-Py always send the current timestamp
-    # Due to bug in TileDB Core the timestamp at which write is done is always 0
-    with tiledb.open(tiledb_uri, mode="w", timestamp=current_milli_time(), ctx=caching.CLOUD_CONTEXT) as arr:
-        arr[0:len(contents)] = {"contents": contents}
-        arr.meta["file_size"] = len(contents)
-        if mimetype is not None:
-            arr.meta["mimetype"] = mimetype
-        if format is not None:
-            arr.meta["format"] = format
-        if type is not None:
-            arr.meta["type"] = type
-
-    caching.Array.from_cache(tiledb_uri, {"contents": contents})
+    array = caching.Array.from_cache(tiledb_uri)
+    await array.write_data(contents, dict(mimetype=mimetype, format=format, type=type))
 
     return final_array_name
 
@@ -127,18 +109,19 @@ def create(
             parts = paths.split(path)
             namespace = parts[-2]
 
-            # Use the general cloud context by default.
-            tiledb_create_context = caching.CLOUD_CONTEXT
-
             # Retrieving credentials is optional
             # If None, default credentials will be used
             s3_credentials = s3_credentials or _namespace_s3_credentials(namespace)
 
-            if s3_credentials is not None:
+            if s3_credentials is None:
+                # Use the general cloud context by default.
+                tiledb_create_context = tiledb.cloud.Ctx()
+            else:
                 # update context with config having header set
                 tiledb_create_context = tiledb.cloud.Ctx({
                     "rest.creation_access_credentials_name": s3_credentials,
                 })
+
             # The array will be be 1 dimensional with domain of 0 to max uint64. We use a tile extent of 1024 bytes
             dom = tiledb.Domain(
                 tiledb.Dim(
