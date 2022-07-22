@@ -68,7 +68,7 @@ def is_remote(path: str) -> bool:
     >>> is_remote("my/home/directory")
     False
     """
-    return split(path)[0] == "cloud"
+    return split(strip(path))[0] == "cloud"
 
 
 def is_remote_dir(path: str) -> bool:
@@ -83,7 +83,7 @@ def is_remote_dir(path: str) -> bool:
     >>> is_remote_dir("cloud/shared/too/many/slashes")
     False
     """
-    splits = split(path)
+    splits = split(strip(path))
     if splits[0] != "cloud":
         return False
     if len(splits) == 1:
@@ -119,7 +119,7 @@ def category_namespace(path: str) -> Tuple[Optional[str], Optional[str]]:
     >>> extract_category("cloud")
     (None, None)
     """
-    parts = split(path)
+    parts = split(strip(path))
     if parts[0] != "cloud":
         return (None, None)
     try:
