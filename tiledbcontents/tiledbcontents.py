@@ -582,7 +582,7 @@ class AsyncTileDBCheckpoints(filecheckpoints.AsyncGenericFileCheckpoints):
     # Immutable version of the only model we return ourselves.
     _BASE_MODEL = (
         ("id", "checkpoints-not-supported"),
-        # ("last_modified", "models._DUMMY_DATE"),
+        ("last_modified", models._DUMMY_DATE),
     )
 
     async def create_file_checkpoint(self, content, format, path):
