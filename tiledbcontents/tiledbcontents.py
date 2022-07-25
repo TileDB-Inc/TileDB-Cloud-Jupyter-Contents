@@ -1,14 +1,11 @@
-import asyncio
 import base64
-import functools
 import json
 import posixpath
-from typing import Any, Callable, List, TypeVar
+from typing import List
 
 import nbformat
 from jupyter_server.services.contents import filecheckpoints
 from jupyter_server.services.contents import filemanager
-import numpy
 import tiledb
 import tiledb.cloud
 import tornado.web
@@ -43,7 +40,7 @@ class AsyncTileDBCloudContentsManager(
             cloud = models.create(path="cloud", type="directory")
             if content:
                 cloud["format"] = "json"
-                cloud["content"] = await _call(listings.all_notebooks)
+                cloud["content"] = await caching.call(listings.all_notebooks)
 
                 cloud["last_modified"] = models.max_present(
                     models.to_utc(cat.get("last_modified")) for cat in cloud["content"]
@@ -54,10 +51,10 @@ class AsyncTileDBCloudContentsManager(
         category, namespace = paths.category_namespace(path)
         if category:
             if namespace:
-                return await _call(
+                return await caching.call(
                     listings.namespace, category, namespace, content=content
                 )
-            return await _call(listings.category, category, content=content)
+            return await caching.call(listings.category, category, content=content)
 
         return models.create(
             path=path,
@@ -73,7 +70,7 @@ class AsyncTileDBCloudContentsManager(
             if not paths.is_remote(path):
                 # If this isn't a remote path, get the local file contents.
                 model = await super().get(path, content, type, format)
-                if path == "" and content and await _call(_is_cloud_enabled):
+                if path == "" and content and await caching.call(_is_cloud_enabled):
                     # If we're at the root, and there's an existing entry
                     # named "cloud", remove it from the list.
                     file_list: List[models.Model] = model["content"]
@@ -83,7 +80,7 @@ class AsyncTileDBCloudContentsManager(
                             break
 
                     # Put our own "cloud" folder in.
-                    cloud_content = await _call(listings.all_notebooks)
+                    cloud_content = await caching.call(listings.all_notebooks)
                     file_list.append(
                         models.create(
                             path="cloud",
@@ -210,7 +207,7 @@ class AsyncTileDBCloudContentsManager(
             tiledb_uri = paths.tiledb_uri_from_path(path)
             try:
                 caching.Array.purge(tiledb_uri)
-                return await _call(tiledb.cloud.array.delete_array, tiledb_uri)
+                return await caching.call(tiledb.cloud.array.delete_array, tiledb_uri)
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
                 raise tornado.web.HTTPError(
                     500, f"Error deregistering {tiledb_uri!r}: {e}"
@@ -238,7 +235,7 @@ class AsyncTileDBCloudContentsManager(
 
             try:
                 caching.Array.purge(tiledb_uri)
-                return await _call(
+                return await caching.call(
                     tiledb.cloud.notebook.rename_notebook, tiledb_uri, array_name_new
                 )
             except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
@@ -307,7 +304,7 @@ class AsyncTileDBCloudContentsManager(
         if paths.is_remote(path):
             if path.endswith(paths.NOTEBOOK_EXT):
                 path = path[: -1 * len(paths.NOTEBOOK_EXT)]
-            return await _call(arrays.exists, path)
+            return await caching.call(arrays.exists, path)
         return await super().file_exists(path)
 
     async def new_untitled(self, path="", type="", ext="", options=""):
@@ -401,13 +398,11 @@ class AsyncTileDBCloudContentsManager(
         """
         nb_contents = nbformat.from_dict(model["content"])
         self.check_and_sign(nb_contents, path)
-        file_contents = numpy.array(bytearray(json.dumps(model["content"]), "utf-8"))
 
         try:
-            final_name = await _call(
-                arrays.write_bytes,
+            final_name = await arrays.write_data(
                 path,
-                file_contents,
+                json.dumps(model["content"]),
                 mimetype=model.get("mimetype"),
                 format=model.get("format"),
                 type="notebook",
@@ -436,20 +431,18 @@ class AsyncTileDBCloudContentsManager(
         if content:
             tiledb_uri = paths.tiledb_uri_from_path(path)
             try:
-                info = await _call(tiledb.cloud.array.info, tiledb_uri)
+                info = await caching.call(tiledb.cloud.array.info, tiledb_uri)
                 model["last_modified"] = models.to_utc(info.last_accessed)
                 if "write" not in info.allowed_actions:
                     model["writable"] = False
 
-                arr = await _call(caching.Array.from_cache, tiledb_uri)
+                arr = caching.Array.from_cache(tiledb_uri)
 
                 nb_content = []
-                file_content = await _call(arr.read)
+                file_content = await arr.read()
                 if file_content is not None:
                     nb_content = nbformat.reads(
-                        file_content["contents"]
-                        .tostring()
-                        .decode("utf-8", "backslashreplace"),
+                        file_content,
                         as_version=NBFORMAT_VERSION,
                     )
                     self.mark_trusted_cells(nb_content, path)
@@ -482,15 +475,15 @@ class AsyncTileDBCloudContentsManager(
         if content:
             tiledb_uri = paths.tiledb_uri_from_path(path)
             try:
-                info = await _call(tiledb.cloud.array.info, tiledb_uri)
+                info = await caching.call(tiledb.cloud.array.info, tiledb_uri)
                 model["last_modified"] = models.to_utc(info.last_accessed)
                 if "write" not in info.allowed_actions:
                     model["writable"] = False
 
-                arr = await _call(caching.Array.from_cache, tiledb_uri)
+                arr = caching.Array.from_cache(tiledb_uri)
 
                 # Use cached meta, only file_size is ever updated
-                meta = arr.cached_meta
+                meta = await arr.meta()
                 # Get metadata information
                 if "mimetype" in meta:
                     model["mimetype"] = meta["mimetype"]
@@ -502,22 +495,11 @@ class AsyncTileDBCloudContentsManager(
                 if "type" in meta:
                     model["type"] = meta["type"]
 
-                file_content = arr.read()
-                if file_content is not None:
-                    nb_content = file_content["contents"]
-                    model["content"] = nb_content
-                else:
-                    model["content"] = []
+                model["content"] = await arr.read()
 
-                if (
-                    "type" in meta
-                    and meta["type"] == "notebook"
-                    and file_content is not None
-                ):
+                if meta.get("type") == "notebook":
                     nb_content = nbformat.reads(
-                        file_content["contents"]
-                        .tostring()
-                        .decode("utf-8", "backslashreplace"),
+                        model["content"],
                         as_version=NBFORMAT_VERSION,
                     )
                     self.mark_trusted_cells(nb_content, path)
@@ -562,7 +544,7 @@ class AsyncTileDBCloudContentsManager(
                     path = path[: -1 * len(paths.NOTEBOOK_EXT)]
                 try:
                     tiledb_uri = paths.tiledb_uri_from_path(path)
-                    return await _call(arrays.fetch_type, tiledb_uri)
+                    return await arrays.fetch_type(tiledb_uri)
                 except Exception:
                     return "directory"
 
@@ -619,7 +601,6 @@ class AsyncTileDBCheckpoints(filecheckpoints.AsyncGenericFileCheckpoints):
         """returns a list of checkpoint models for a given file,
         default just does one per file
         """
-        path = paths.strip(path)
         if paths.is_remote(path):
             return []
         return await super().list_checkpoints(path)
@@ -627,7 +608,7 @@ class AsyncTileDBCheckpoints(filecheckpoints.AsyncGenericFileCheckpoints):
     async def rename_checkpoint(self, checkpoint_id, old_path, new_path):
         """renames checkpoint from old path to new path"""
         if paths.is_remote(old_path):
-            return []
+            return
         return await super().rename_checkpoint(checkpoint_id, old_path, new_path)
 
 
@@ -679,12 +660,3 @@ def _is_cloud_enabled():
         )
 
     return False
-
-
-_R = TypeVar("_R")
-
-
-async def _call(__fn: Callable[..., _R], *args: Any, **kwargs: Any) -> _R:
-    """Calls ``__fn(*args, **kwargs)`` on an executor as to not block."""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, functools.partial(__fn, *args, **kwargs))

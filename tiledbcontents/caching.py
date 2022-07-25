@@ -1,107 +1,112 @@
 """Tools to handle caching of TileDB arrays and listings."""
 
+import asyncio
+import functools
 import time
-from typing import Dict, Optional, Tuple, Type
+from typing import Any, Callable, Dict, Optional, Tuple, Type, TypeVar
 
-import tiledb
-import tiledb.cloud
-import tiledb.cloud.client
-import tornado.web
+import numpy as np
 
 from . import models
 
-CLOUD_CONTEXT = tiledb.cloud.Ctx()
+import tiledb
+import tiledb.cloud
+from tiledb.cloud import client
 
 
 class Array:
-    """Caching wrapper around a TileDB Array."""
+    """An Array wrapper that will cache metadata and the last-written data."""
 
-    def __init__(self, uri: str, contents: Optional[models.Model] = None):
-        """
-        Create an Array wrapping a TileDB Array class
-        :param uri:
-        """
-        self.uri = uri
-        try:
-            self.array: tiledb.Array = tiledb.open(uri, ctx=CLOUD_CONTEXT)
-        except Exception as e:
-            raise tornado.web.HTTPError(400, f"Error in Array init: {e}") from e
-        self.contents_fetched = False
-        self.cached_meta: models.Model = {}
-        self.cache_metadata()
-        # Cache contents if exist during first array write
-        self.cached_contents: Optional[models.Model] = contents
+    def __init__(self, uri: str):
+        self._uri = uri
+        """The URI of the array."""
+        self._meta: Optional[Dict[str, Any]] = None
+        """The metadata of the array as of the last open."""
 
-    # A global cache of Arrays by URI.
     _cache: Dict[str, "Array"] = {}
+    """The cache."""
 
     @classmethod
-    def from_cache(cls: Type["Array"], uri: str, *args, **kwargs) -> "Array":
-        """Fetches an Array from the cache, or constructs a new one if not present."""
+    def from_cache(cls, uri: str) -> "Array":
         try:
             return cls._cache[uri]
         except KeyError:
             pass
-        cls._cache[uri] = cls(uri, *args, **kwargs)
-        return cls._cache[uri]
+        ret = cls._cache[uri] = cls(uri)
+
+        return ret
 
     @classmethod
-    def purge(cls: Type["Array"], uri: str) -> None:
+    def purge(cls, uri: str) -> None:
         cls._cache.pop(uri, None)
 
-    def read(self) -> Optional[models.Model]:
-        """
-        Fetch all contents of the array based on file_size metadata field
-        :return: raw bytes of content
-        """
+    async def read(self) -> str:
+        contents, self._meta = await call(self._read_sync)
+        return contents
 
-        try:
-            if self.cached_contents is not None:
-                contents = self.cached_contents
-                # Invalidate cached contents after first read
-                # Used only to speed up first read after creation, avoiding the server roundtrip
-                # since contents are already available
-                self.cached_contents = None
-                return contents
+    def _read_sync(self) -> Tuple[str, models.Model]:
+        with tiledb.open(self._uri, "r", ctx=tiledb.cloud.Ctx()) as arr:
+            meta = dict(arr.meta.items())
+            try:
+                file_size = meta["file_size"]
+            except KeyError:
+                raise Exception(
+                    f"file_size metadata entry not present in {self._uri}"
+                    f" (existing keys: {set(meta)})"
+                )
+            np_contents: np.ndarray = arr[0:file_size]["contents"]
+        contents_bytes = np_contents.tobytes()
+        contents = contents_bytes.decode("utf-8")
+        return contents, meta
 
-            if self.contents_fetched:
-                self.reopen()
+    async def meta(self) -> models.Model:
+        if self._meta is not None:
+            # We already have metadata.
+            return self._meta
 
-            self.contents_fetched = True
-            meta = self.array.meta
-            if "file_size" in meta:
-                return self.array[slice(0, meta["file_size"])]
-        except Exception as e:
-            raise tornado.web.HTTPError(400, f"Error in Array::read: {e}") from e
+        # We need to load array metadata for the first time.
+        self._meta = await call(self._load_meta_sync)
+        assert self._meta is not None  # to shut up mypy
+        return dict(self._meta)  # Make a copy to avoid spooky action at a distance.
 
-        return None
+    def _load_meta_sync(self) -> models.Model:
+        """Synchronously loads metadata."""
+        with tiledb.open(self._uri, ctx=tiledb.cloud.Ctx()) as arr:
+            return dict(arr.meta.items())
 
-    def reopen(self):
-        """
-        Reopen an array at the current timestamp
-        :return:
-        """
-        try:
-            if self.array is not None:
-                self.array.close()
+    async def write_data(
+        self,
+        contents: str,
+        new_meta: Dict[str, Optional[str]],
+    ) -> None:
+        contents_bytes = contents.encode("utf-8")
+        new_meta = {k: v for k, v in new_meta.items() if v}
+        await call(
+            self._write_sync,
+            contents_bytes,
+            new_meta,
+        )
+        # Ensure that we've already loaded metadata...
+        await self.meta()
+        assert self._meta
+        self._meta.update(new_meta)
 
-            self.array = tiledb.open(self.uri, ctx=CLOUD_CONTEXT)
-        except Exception as e:
-            raise tornado.web.HTTPError(400, f"Error in Array::reopen: {e}") from e
-
-    def cache_metadata(self):
-        try:
-            self.cached_meta = dict(self.array.meta.items())
-        except Exception as e:
-            raise tornado.web.HTTPError(
-                400, f"Error in Array::cache_metadata: {e}"
-            ) from e
+    def _write_sync(
+        self,
+        contents_bytes: bytes,
+        new_meta: Dict[str, Optional[str]],
+    ) -> None:
+        contents_arr = np.frombuffer(contents_bytes, dtype=np.uint8)
+        with tiledb.open(self._uri, mode="w", ctx=tiledb.cloud.Ctx()) as arr:
+            arr[: len(contents_bytes)] = {"contents": contents_arr}
+            arr.meta["file_size"] = len(contents_bytes)
+            arr.meta.update(new_meta)
 
 
 _CATEGORY_LOADERS = {
-    "owned": tiledb.cloud.client.list_arrays,
-    "shared": tiledb.cloud.client.list_shared_arrays,
-    "public": tiledb.cloud.client.list_public_arrays,
+    "owned": client.list_arrays,
+    "shared": client.list_shared_arrays,
+    "public": client.list_public_arrays,
 }
 
 CATEGORIES = frozenset(_CATEGORY_LOADERS)
@@ -129,7 +134,9 @@ class ArrayListing:
 
     @classmethod
     def from_cache(
-        cls: Type["ArrayListing"], category: str, namespace: Optional[str] = None,
+        cls: Type["ArrayListing"],
+        category: str,
+        namespace: Optional[str] = None,
     ) -> "ArrayListing":
         """Fetches an ArrayListing from the cache, or constructs a new one if not present."""
         try:
@@ -167,3 +174,12 @@ class ArrayListing:
     def arrays(self):
         result = self._fetch().get()
         return result and result.arrays
+
+
+_R = TypeVar("_R")
+
+
+async def call(__fn: Callable[..., _R], *args: Any, **kwargs: Any) -> _R:
+    """Calls ``__fn(*args, **kwargs)`` on an executor as to not block."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, functools.partial(__fn, *args, **kwargs))
