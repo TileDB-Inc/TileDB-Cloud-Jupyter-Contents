@@ -42,7 +42,7 @@ Install all the dependencies, and set yourself up for development:
 ```
 $ pip install --editable .
 [...]
-$ pip install jupyter
+$ pip install jupyterlab
 [...]
 ```
 
@@ -72,7 +72,7 @@ The only remaining step is to launch Jupyter and configure it to use the
 `AsyncTileDBCloudContentsManager` class:
 
 ```
-$ jupyter lab --ServerApp.contents_manager_class=tiledbcontents.TileDBCloudContentsManager
+$ jupyter lab --ServerApp.contents_manager_class=tiledbcontents.AsyncTileDBCloudContentsManager
 ```
 
 This will run a local test Jupyter lab server without changing your default
