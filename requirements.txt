@@ -20,7 +20,7 @@ jupyter-core==4.11.1
 jupyter-server==1.18.1
 jupyterlab-pygments==0.2.2
 MarkupSafe==2.1.1
-mistune==0.8.4
+mistune==2.0.3
 nbclient==0.6.6
 nbconvert==6.5.1
 nbformat==5.4.0
