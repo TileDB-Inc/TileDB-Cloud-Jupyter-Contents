@@ -1,7 +1,11 @@
 import base64
+import functools
+import inspect
+import itertools
 import json
 import posixpath
-from typing import List
+import sys
+from typing import Any, Callable, Dict, List, TypeVar
 
 import nbformat
 from jupyter_server.services.contents import filecheckpoints
@@ -22,6 +26,58 @@ NBFORMAT_VERSION = 4
 NOTEBOOK_MIME = "application/x-ipynb+json"
 
 
+_T = TypeVar("_T", bound=Callable)
+
+_call_count = 0
+
+
+def trace_it(fn: _T) -> _T:
+    if inspect.isawaitable(fn):
+
+        @functools.wraps(fn)  # type: ignore[arg-type]
+        async def tracewrap_supreme(*args, **kwargs):
+            now_count = _print_call(fn, args, kwargs)
+            result = await fn(*args, **kwargs)
+            print(
+                f"RETURNING {now_count:5}: {fn.__qualname__} -> {_maybe_repr(result)}",
+                file=sys.stderr,
+            )
+            return result
+
+    else:
+
+        @functools.wraps(fn)
+        def tracewrap_supreme(*args, **kwargs):
+            now_count = _print_call(fn, args, kwargs)
+            result = fn(*args, **kwargs)
+            print(
+                f"RETURNING {now_count:5}: {fn.__qualname__} -> {_maybe_repr(result)}",
+                file=sys.stderr,
+            )
+            return result
+
+    return tracewrap_supreme  # type: ignore[return-value]
+
+
+def _print_call(fn: Callable, args: tuple, kwargs: Dict[str, Any]):
+    global _call_count
+    _call_count += 1
+    ct = _call_count
+    all_args = itertools.chain(
+        map(_maybe_repr, args), (f"{k}={_maybe_repr(v)}" for k, v in kwargs.items())
+    )
+    args_str = ", ".join(all_args)
+    print(f"ENTERING  {ct:5}:  {fn.__qualname__}({args_str})", file=sys.stderr)
+    return ct
+
+
+def _maybe_repr(it):
+    if isinstance(it, (str, bytes, bool, int, float)):
+        return repr(it)
+    typ = type(it)
+    return f"<some {typ.__qualname__}>"
+
+
 class AsyncTileDBCloudContentsManager(
     filemanager.AsyncFileContentsManager, traitlets.HasTraits
 ):
@@ -32,11 +88,14 @@ class AsyncTileDBCloudContentsManager(
     def _checkpoints_class_default(self):
         return AsyncTileDBCheckpoints
 
+    @trace_it
     async def _dir_model(self, path, content: bool = False):
         if not paths.is_remote(path) and not paths.is_remote_dir(path):
+            print("LOCAL", file=sys.stderr)
             return await super()._dir_model(path, content)
 
         if path == "cloud":
+            print("CLOUD BASE", file=sys.stderr)
             cloud = models.create(path="cloud", type="directory")
             if content:
                 cloud["format"] = "json"
@@ -51,6 +110,7 @@ class AsyncTileDBCloudContentsManager(
         category, namespace = paths.category_namespace(path)
         if category:
             if namespace:
+                print(f"NAMESPACE {namespace!r}")
                 return await caching.call(
                     listings.namespace, category, namespace, content=content
                 )
@@ -63,6 +123,7 @@ class AsyncTileDBCloudContentsManager(
             # created=models.DUMMY_DATE,
         )
 
+    @trace_it
     async def get(self, path, content=True, type=None, format=None):
         """Get a file or directory model."""
         path = paths.strip(path)
@@ -250,6 +311,7 @@ class AsyncTileDBCloudContentsManager(
     # ContentsManager API part 2: methods that have usable default
     # implementations, but can be overridden in subclasses.
 
+    @trace_it
     async def dir_exists(self, path):
         """Does a directory exist at the given path?
         Like os.path.isdir
@@ -269,6 +331,7 @@ class AsyncTileDBCloudContentsManager(
 
         return await super().dir_exists(path)
 
+    @trace_it
     async def is_hidden(self, path):
         """Is path a hidden directory or file?
         Parameters
@@ -287,6 +350,7 @@ class AsyncTileDBCloudContentsManager(
 
         return await super().is_hidden(path)
 
+    @trace_it
     async def file_exists(self, path=""):
         """Does a file exist at the given path?
         Like os.path.isfile
