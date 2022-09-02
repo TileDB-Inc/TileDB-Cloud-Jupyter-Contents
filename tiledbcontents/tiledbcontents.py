@@ -32,9 +32,9 @@ _call_count = 0
 
 
 def trace_it(fn: _T) -> _T:
-    if inspect.isawaitable(fn):
+    if inspect.iscoroutinefunction(fn):
 
-        @functools.wraps(fn)  # type: ignore[arg-type]
+        @functools.wraps(fn)
         async def tracewrap_supreme(*args, **kwargs):
             now_count = _print_call(fn, args, kwargs)
             result = await fn(*args, **kwargs)
