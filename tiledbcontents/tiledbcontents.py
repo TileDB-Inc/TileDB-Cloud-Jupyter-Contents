@@ -3,9 +3,10 @@ import json
 import posixpath
 from typing import List
 
-import nbformat
+import jupyter_server.files.handlers as jsfh
 from jupyter_server.services.contents import filecheckpoints
 from jupyter_server.services.contents import filemanager
+import nbformat
 import tiledb
 import tiledb.cloud
 import tornado.web
@@ -27,6 +28,12 @@ class AsyncTileDBCloudContentsManager(
 ):
     # This makes the checkpoints get saved on this directory
     root_dir = traitlets.Unicode("./", config=True)
+
+    # These are needed to reset the file downloader so that it actually works
+    # rather than intercepting everything with a downloader that is only aware
+    # of the filesystem.
+    files_handler_class = traitlets.Type(jsfh.FilesHandler)
+    files_handler_params = traitlets.Dict({})
 
     @traitlets.default("checkpoints_class")
     def _checkpoints_class_default(self):
