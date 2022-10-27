@@ -23,7 +23,7 @@ REQUIRES = [
     "setuptools-scm>=1.5.4",
     "setuptools>=45",
     "tiledb-cloud>=0.7.44",
-    "tiledb>=0.16.1, !=0.17.5",  # 0.17.5 has a terminal-opening bug.
+    "tiledb>=0.18.0",
     "tornado",
     "traitlets",
 ]
