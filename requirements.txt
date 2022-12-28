@@ -16,7 +16,7 @@ importlib-resources==5.8.0
 Jinja2==3.1.2
 jsonschema==4.7.2
 jupyter-client==7.3.4
-jupyter-core==4.11.1
+jupyter-core==4.11.2
 jupyter-server==1.18.1
 jupyterlab-pygments==0.2.2
 MarkupSafe==2.1.1
