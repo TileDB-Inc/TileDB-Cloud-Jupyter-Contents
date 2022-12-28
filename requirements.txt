@@ -4,7 +4,7 @@ argon2-cffi-bindings==21.2.0
 attrs==21.4.0
 beautifulsoup4==4.11.1
 bleach==5.0.1
-certifi==2022.6.15
+certifi==2022.12.7
 cffi==1.15.1
 cloudpickle==1.4.1
 defusedxml==0.7.1
