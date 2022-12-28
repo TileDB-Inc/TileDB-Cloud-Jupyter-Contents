@@ -166,6 +166,7 @@ class ArrayListing:
                 file_type=[tiledb.cloud.rest_api.models.FileType.NOTEBOOK],
                 namespace=self.namespace,
                 async_req=True,
+                per_page=1_000_000 # Seth this this to 1 million so we get all results back in a single request
             )
             self.last_fetched = time.time()
 
