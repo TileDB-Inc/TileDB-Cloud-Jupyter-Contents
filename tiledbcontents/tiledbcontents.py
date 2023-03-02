@@ -547,8 +547,6 @@ class AsyncTileDBCloudContentsManager(
             if paths.is_remote_dir(path):
                 return "directory"
             else:
-                if path.endswith(paths.NOTEBOOK_EXT):
-                    path = path[: -1 * len(paths.NOTEBOOK_EXT)]
                 try:
                     tiledb_uri = paths.tiledb_uri_from_path(path)
                     return await arrays.fetch_type(tiledb_uri)
