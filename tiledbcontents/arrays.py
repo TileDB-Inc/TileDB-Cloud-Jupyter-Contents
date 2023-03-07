@@ -238,10 +238,14 @@ def _namespace_s3_prefix(namespace: str) -> Optional[str]:
         profile = tiledb.cloud.client.user_profile()
 
         if namespace == profile.username:
+            if profile.asset_locations.notebooks and profile.asset_locations.notebooks.path:
+                return profile.asset_locations.notebooks.path
             if profile.default_s3_path is not None:
                 return paths.join(profile.default_s3_path, "notebooks")
             return None
         organization = tiledb.cloud.client.organization(namespace)
+        if organization.asset_locations.notebooks and organization.asset_locations.notebooks.path:
+            return organization.asset_locations.notebooks.path
         if organization.default_s3_path is not None:
             return paths.join(organization.default_s3_path, "notebooks")
         return None
@@ -258,8 +262,12 @@ def _namespace_s3_credentials(namespace: str) -> Optional[str]:
         profile = tiledb.cloud.client.user_profile()
 
         if namespace == profile.username:
+            if profile.asset_locations.notebooks and profile.asset_locations.notebooks.credentials_name:
+                return profile.asset_locations.notebooks.credentials_name
             return profile.default_s3_path_credentials_name
         organization = tiledb.cloud.client.organization(namespace)
+        if organization.asset_locations.notebooks and organization.asset_locations.notebooks.credentials_name:
+            return organization.asset_locations.notebooks.credentials_name
         return organization.default_s3_path_credentials_name
     except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
         raise tornado.web.HTTPError(
