@@ -376,7 +376,7 @@ class AsyncTileDBCloudContentsManager(
 
     async def copy(self, from_path, to_path=None):
         from_path = paths.strip(from_path)
-        model = self.get(from_path)
+        model = await self.get(from_path)
         model.pop("path", None)
         if not to_path:
             # A missing to_path implies that we should create a duplicate
