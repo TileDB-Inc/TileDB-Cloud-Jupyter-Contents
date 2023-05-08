@@ -97,7 +97,7 @@ class Array:
         new_meta: Dict[str, Optional[str]],
     ) -> None:
         contents_arr = np.frombuffer(contents_bytes, dtype=np.uint8)
-        with tiledb.open(self._uri, mode="w", ctx=tiledb.cloud.Ctx()) as arr:
+        with tiledb.open(self._uri, mode="w", ctx=tiledb.cloud.Ctx(), timestamp=int(time.time() * 1000)) as arr:
             arr[: len(contents_bytes)] = {"contents": contents_arr}
             arr.meta["file_size"] = len(contents_bytes)
             arr.meta.update(new_meta)
