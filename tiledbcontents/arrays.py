@@ -167,12 +167,27 @@ def create(
                     f"in {namespace} profile settings",
                 )
 
-            tiledb_uri_s3 = "tiledb://" + paths.join(namespace, s3_prefix, array_name)
+            tiledb_uri = "tiledb://" + paths.join(namespace, array_name)
+
+            # Because TileDB Cloud now allows creating arrays with duplicate
+            # names, we can't rely on DenseArray.create to error out if we try
+            # to create an array that shadows an existing name.
+            if tiledb.object_type(tiledb_uri):
+                # OK, let's try incrementing the filename.
+                parts = paths.split(path)
+                array_name = parts[-1]
+
+                array_name = paths.increment_filename(array_name)
+
+                parts[-1] = array_name
+                path = paths.join(*parts)
+                # Start from the top. This doesn't count as a retry.
+                continue
 
             # Create the (empty) array on disk.
+            tiledb_uri_s3 = "tiledb://" + paths.join(namespace, s3_prefix, array_name)
             tiledb.DenseArray.create(tiledb_uri_s3, schema)
 
-            tiledb_uri = "tiledb://" + paths.join(namespace, array_name)
             time.sleep(0.25)
 
             file_properties = {}
@@ -209,21 +224,10 @@ def create(
                     400, f"Error creating file: {e}. Are your credentials valid?"
                 ) from e
 
-            if "already exists" in str(e):
-                # OK, let's try incrementing the filename.
-                parts = paths.split(path)
-                array_name = parts[-1]
-
-                array_name = paths.increment_filename(array_name)
-
-                parts[-1] = array_name
-                path = paths.join(*parts)
-                # This doesn't count as a retry.
-            elif retry:
-                retry -= 1
-            else:
+            if retry <= 0:
                 # We're out of retries.
                 raise
+            retry -= 1
         except tornado.web.HTTPError:
             # HTTPErrors are all errors that we raise ourselves,
             # so just reraise them.
