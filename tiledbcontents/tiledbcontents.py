@@ -1,11 +1,15 @@
 import base64
+import datetime
+import itertools
 import json
+import math
 import posixpath
-from typing import List
+from typing import List, Optional
 
 import jupyter_server.files.handlers as jsfh
 from jupyter_server.services.contents import filecheckpoints
 from jupyter_server.services.contents import filemanager
+from jupyter_server.services.contents import manager
 import nbformat
 import tiledb
 import tiledb.cloud
@@ -117,7 +121,7 @@ class AsyncTileDBCloudContentsManager(
                 )
             if type == "file":
                 return models.fill_in_dates(
-                    await self._file_from_array(path, content=content, format=format)
+                    await _file_from_array(self, path, content=content, format=format)
                 )
             if type == "directory":
                 return models.fill_in_dates(
@@ -159,7 +163,7 @@ class AsyncTileDBCloudContentsManager(
             return await super().save(model, path)
 
         if path.endswith(paths.NOTEBOOK_EXT):
-            path = path[: -len(paths.NOTEBOOK_EXT)]
+            path = paths.maybe_trim_ipynb(path)
             if model["type"] == "file":
                 try:
                     _try_convert_file_to_notebook(model)
@@ -207,7 +211,6 @@ class AsyncTileDBCloudContentsManager(
         """Delete the file or directory at path."""
         path = paths.strip(path)
         if paths.is_remote(path):
-
             if path.endswith(paths.NOTEBOOK_EXT):
                 path = path[: -1 * len(paths.NOTEBOOK_EXT)]
 
@@ -231,7 +234,6 @@ class AsyncTileDBCloudContentsManager(
         old_path = paths.strip(old_path)
         new_path = paths.strip(new_path)
         if paths.is_remote(old_path):
-
             if old_path.endswith(paths.NOTEBOOK_EXT):
                 old_path = old_path[: -1 * len(paths.NOTEBOOK_EXT)]
 
@@ -473,63 +475,6 @@ class AsyncTileDBCloudContentsManager(
 
         return model
 
-    async def _file_from_array(self, path, content=True, format=None):
-        """
-        Build a notebook model from database record.
-        """
-        model = models.create(path=path, type="file")
-
-        if content:
-            tiledb_uri = paths.tiledb_uri_from_path(path)
-            try:
-                info = await caching.call(tiledb.cloud.array.info, tiledb_uri)
-                model["last_modified"] = models.to_utc(info.last_accessed)
-                if "write" not in info.allowed_actions:
-                    model["writable"] = False
-
-                arr = caching.Array.from_cache(tiledb_uri)
-
-                # Use cached meta, only file_size is ever updated
-                meta = await arr.meta()
-                # Get metadata information
-                if "mimetype" in meta:
-                    model["mimetype"] = meta["mimetype"]
-                if "format" in meta:
-                    model["format"] = meta["format"]
-                else:
-                    model["format"] = format
-
-                if "type" in meta:
-                    model["type"] = meta["type"]
-
-                model["content"] = await arr.read()
-
-                if meta.get("type") == "notebook":
-                    nb_content = nbformat.reads(
-                        model["content"],
-                        as_version=NBFORMAT_VERSION,
-                    )
-                    self.mark_trusted_cells(nb_content, path)
-                    model["format"] = "json"
-                    model["content"] = nb_content
-                    self.validate_notebook_model(model)
-            except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
-                raise tornado.web.HTTPError(
-                    500, "Error fetching file info: {}".format(str(e))
-                )
-            except tiledb.TileDBError as e:
-                raise tornado.web.HTTPError(
-                    500,
-                    "Error fetching file: {}".format(str(e)),
-                )
-            except Exception as e:
-                raise tornado.web.HTTPError(
-                    400,
-                    "Error fetching file: {}".format(str(e)),
-                )
-
-        return model
-
     async def guess_type(self, path, allow_directory=True):
         """
         Guess the type of a file.
@@ -560,40 +505,110 @@ class AsyncTileDBCloudContentsManager(
         return "file"
 
 
-class AsyncTileDBCheckpoints(filecheckpoints.AsyncGenericFileCheckpoints):
-    """
-    A wrapper of a class which will in the future support checkpoints by time traveling.
-    It inherits from AsyncGenericFileCheckpoints to checkpoint local files.
-    """
+async def _file_from_array(
+    self: Optional[manager.ContentsManager],
+    path: str,
+    *,
+    timestamp: Optional[datetime.datetime] = None,
+    content: bool = True,
+    format: Optional[str] = None,
+) -> models.Model:
+    """Turns an array into a notebook/file model."""
+    model = models.create(path=path, type="file")
 
-    # Immutable version of the only model we return ourselves.
-    _BASE_MODEL = (
-        ("id", "checkpoints-not-supported"),
+    if content:
+        tiledb_uri = paths.tiledb_uri_from_path(path)
+        try:
+            info = await caching.call(tiledb.cloud.array.info, tiledb_uri)
+            model["last_modified"] = models.to_utc(info.last_accessed)
+            if "write" not in info.allowed_actions:
+                model["writable"] = False
+
+            arr = caching.Array.from_cache(tiledb_uri)
+
+            # Use cached meta, only file_size is ever updated
+            meta = await arr.meta()
+            # Get metadata information
+            if "mimetype" in meta:
+                model["mimetype"] = meta["mimetype"]
+            if "format" in meta:
+                model["format"] = meta["format"]
+            else:
+                model["format"] = format
+
+            if "type" in meta:
+                model["type"] = meta["type"]
+
+            if timestamp:
+                model["content"] = await arr.read_at(timestamp)
+            else:
+                model["content"] = await arr.read()
+
+            if meta.get("type") == "notebook":
+                nb_content = nbformat.reads(
+                    model["content"],
+                    as_version=NBFORMAT_VERSION,
+                )
+                if self:
+                    self.mark_trusted_cells(nb_content, path)
+                model["format"] = "json"
+                model["content"] = nb_content
+                # validate_notebook_model is an instance method that should
+                # really be a class method, since it never uses `self`.
+                manager.ContentsManager.validate_notebook_model(None, model)
+        except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+            raise tornado.web.HTTPError(
+                500, "Error fetching file info: {}".format(str(e))
+            )
+        except tiledb.TileDBError as e:
+            raise tornado.web.HTTPError(
+                500,
+                "Error fetching file: {}".format(str(e)),
+            )
+        except Exception as e:
+            raise tornado.web.HTTPError(
+                400,
+                "Error fetching file: {}".format(str(e)),
+            )
+
+    return model
+
+
+class AsyncTileDBCheckpoints(filecheckpoints.AsyncGenericFileCheckpoints):
+    """System to support checkpointing TileDB arrays."""
+
+    _NO_MANUAL_CHECKPOINTING = (
+        ("id", "manual-checkpoints-unsupported"),
         ("last_modified", models._DUMMY_DATE),
     )
+    """Immutable version of the model we return when trying to create a checkpoint."""
 
     async def create_file_checkpoint(self, content, format, path):
-        """ -> checkpoint model"""
+        """-> checkpoint model"""
         if paths.is_remote(path):
-            return dict(self._BASE_MODEL)
+            return dict(self._NO_MANUAL_CHECKPOINTING)
         return await super().create_file_checkpoint(content, format, path)
 
     async def create_notebook_checkpoint(self, nb, path):
-        """ -> checkpoint model"""
+        """-> checkpoint model"""
         if paths.is_remote(path):
-            return dict(self._BASE_MODEL)
+            return dict(self._NO_MANUAL_CHECKPOINTING)
         return await super().create_notebook_checkpoint(nb, path)
 
     async def get_file_checkpoint(self, checkpoint_id, path):
-        """ -> {'type': 'file', 'content': <str>, 'format': {'text', 'base64'}}"""
+        """-> {'type': 'file', 'content': <str>, 'format': {'text', 'base64'}}"""
         if paths.is_remote(path):
-            self.no_such_checkpoint(path, checkpoint_id)
+            path = paths.maybe_trim_ipynb(path)
+            ts = _parse_checkpoint_id(checkpoint_id)
+            return await _file_from_array(None, path, timestamp=ts, format="file")
         return await super().get_file_checkpoint(checkpoint_id, path)
 
     async def get_notebook_checkpoint(self, checkpoint_id, path):
-        """ -> {'type': 'notebook', 'content': <output of nbformat.read>}"""
+        """-> {'type': 'notebook', 'content': <output of nbformat.read>}"""
         if paths.is_remote(path):
-            self.no_such_checkpoint(path, checkpoint_id)
+            path = paths.maybe_trim_ipynb(path)
+            ts = _parse_checkpoint_id(checkpoint_id)
+            return await _file_from_array(None, path, timestamp=ts, format="file")
         return await super().get_notebook_checkpoint(checkpoint_id, path)
 
     async def delete_checkpoint(self, checkpoint_id, path):
@@ -607,7 +622,16 @@ class AsyncTileDBCheckpoints(filecheckpoints.AsyncGenericFileCheckpoints):
         default just does one per file
         """
         if paths.is_remote(path):
-            return []
+            path = paths.maybe_trim_ipynb(path)
+            tdb_uri = paths.tiledb_uri_from_path(path)
+            arr = caching.Array.from_cache(tdb_uri)
+            timestamps = await arr.timestamps()
+            offset = iter(timestamps)
+            next(offset)  # Eat one offset.
+            return [
+                _to_checkpoint_model(ts, after)
+                for (ts, after) in itertools.zip_longest(timestamps, offset)
+            ]
         return await super().list_checkpoints(path)
 
     async def rename_checkpoint(self, checkpoint_id, old_path, new_path):
@@ -615,6 +639,69 @@ class AsyncTileDBCheckpoints(filecheckpoints.AsyncGenericFileCheckpoints):
         if paths.is_remote(old_path):
             return
         return await super().rename_checkpoint(checkpoint_id, old_path, new_path)
+
+
+_ROUND_UP_INTERVALS_AND_CHOPS = (
+    (datetime.timedelta(minutes=1), "m00s999999+0000"),
+    (datetime.timedelta(seconds=1), "s999999+0000"),
+)
+"""Intervals we will try to "round up" over to give a nicer timestamp.
+
+For instance, if you save a file at 21:10:06.343 and then later at 21:35:58.599,
+we don't need to give you all the precision of the 21:10 save; we can just say
+"21:11".
+
+The second field indicates how much we want to chop off of the
+YYYY-MM-DD-HHhMMmSSs999999 representation of the timestamp for display.
+"""
+_CHECKPOINT_FORMAT = "%Y-%m-%d-%Hh%Mm%Ss%f%z"
+"""The strptime/strftime format we use for timestamps.
+
+Looks like ``2023-06-26-15h01m43s289449+0000``.
+
+This has to be exclusively alphanumeric with hyphens because of an
+(undocumented?) requirement imposed by the way a checkpoint path is parsed.
+If it has anything other than ``\\w`` and ``-`` characters, it won't work:
+https://github.com/jupyter-server/jupyter_server/blob/b652f8d08530bd60ecf4cfffe6c32939fd94eb41/jupyter_server/services/contents/handlers.py#L371
+"""
+
+
+def _to_checkpoint_model(
+    dt: datetime.datetime, after: Optional[datetime.datetime]
+) -> models.Model:
+    """Creates a Jupyter "checkpoint model" for the given datetime.
+
+    The "after" datetime is used to format a nicer representation of the
+    timestamp as described in ``_ROUND_UP_INTERVALS_AND_CHOPS``.
+    """
+    rounded = dt
+    chop = "000+0000"  # Default truncates us to millis.
+    if after:
+        for interval, interval_chop in _ROUND_UP_INTERVALS_AND_CHOPS:
+            dt_rounded = _round_up(dt, interval)
+            after_rounded = _round_up(after, interval)
+            if dt_rounded != after_rounded:
+                rounded = dt_rounded
+                chop = interval_chop
+                break
+
+    return {
+        "id": rounded.strftime(_CHECKPOINT_FORMAT)[: -len(chop)],
+        "last_modified": dt,
+    }
+
+
+def _round_up(dt: datetime.datetime, delta: datetime.timedelta) -> datetime.datetime:
+    delta_secs = delta.total_seconds()
+    intervals = dt.timestamp() / delta_secs
+    ceilinged = math.ceil(intervals)
+    return dt.fromtimestamp(ceilinged * delta_secs, tz=datetime.timezone.utc)
+
+
+def _parse_checkpoint_id(cpid: str) -> datetime.datetime:
+    padding = "YYYY-MM-DD-00h00m00s000000+0000"
+    padded = cpid + padding[len(cpid) :]
+    return datetime.datetime.strptime(padded, _CHECKPOINT_FORMAT)
 
 
 def _try_convert_file_to_notebook(model):
