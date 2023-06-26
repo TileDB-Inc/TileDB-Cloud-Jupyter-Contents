@@ -1,9 +1,10 @@
 """Tools to handle caching of TileDB arrays and listings."""
 
 import asyncio
+import datetime
 import functools
 import time
-from typing import Any, Callable, Dict, Optional, Tuple, Type, TypeVar
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Type, TypeVar
 
 import numpy as np
 
@@ -44,8 +45,24 @@ class Array:
         contents, self._meta = await call(self._read_sync)
         return contents
 
-    def _read_sync(self) -> Tuple[str, models.Model]:
-        with tiledb.open(self._uri, "r", ctx=tiledb.cloud.Ctx()) as arr:
+    async def read_at(self, timestamp: datetime.datetime) -> str:
+        """Reads the array at the given timestamp.
+
+        This method will NOT update the contents cache, since this is an old
+        version of the array.
+        """
+        contents, _ = await call(self._read_sync, timestamp)
+        return contents
+
+    def _read_sync(
+        self, timestamp: Optional[datetime.datetime] = None
+    ) -> Tuple[str, models.Model]:
+        with tiledb.open(
+            self._uri,
+            "r",
+            timestamp=_to_millis(timestamp),
+            ctx=tiledb.cloud.Ctx(),
+        ) as arr:
             meta = dict(arr.meta.items())
             try:
                 file_size = meta["file_size"]
@@ -97,10 +114,33 @@ class Array:
         new_meta: Dict[str, Optional[str]],
     ) -> None:
         contents_arr = np.frombuffer(contents_bytes, dtype=np.uint8)
-        with tiledb.open(self._uri, mode="w", ctx=tiledb.cloud.Ctx(), timestamp=int(time.time() * 1000)) as arr:
+        with tiledb.open(
+            self._uri,
+            mode="w",
+            ctx=tiledb.cloud.Ctx(),
+            timestamp=int(time.time() * 1000),
+        ) as arr:
             arr[: len(contents_bytes)] = {"contents": contents_arr}
             arr.meta["file_size"] = len(contents_bytes)
             arr.meta.update(new_meta)
+
+    async def timestamps(self) -> Sequence[datetime.datetime]:
+        return tuple(_from_millis(dt) for dt in await call(self._timestamps_sync))
+
+    def _timestamps_sync(self) -> Sequence[int]:
+        frags = tiledb.array_fragments(self._uri)
+        # Timestamps are stored as (start, end), and we want the end.
+        return tuple(f.timestamp_range[1] for f in frags)
+
+
+def _to_millis(dt: Optional[datetime.datetime]) -> Optional[int]:
+    if dt:
+        return round(1000 * dt.timestamp())
+    return None
+
+
+def _from_millis(millis: int) -> datetime.datetime:
+    return datetime.datetime.fromtimestamp(millis / 1000, tz=datetime.timezone.utc)
 
 
 _CATEGORY_LOADERS = {
@@ -166,7 +206,7 @@ class ArrayListing:
                 file_type=[tiledb.cloud.rest_api.models.FileType.NOTEBOOK],
                 namespace=self.namespace,
                 async_req=True,
-                per_page=1_000_000 # Seth this this to 1 million so we get all results back in a single request
+                per_page=1_000_000,  # Seth this this to 1 million so we get all results back in a single request
             )
             self.last_fetched = time.time()
 
