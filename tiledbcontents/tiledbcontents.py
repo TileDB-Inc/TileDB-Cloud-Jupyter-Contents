@@ -8,15 +8,15 @@ from typing import Any, List, Optional, cast
 
 import jupyter_server.files.handlers as jsfh
 import nbformat
-import tiledb
-import tiledb.cloud
 import tornado.web
 import traitlets
 from jupyter_server.services.contents import filecheckpoints
 from jupyter_server.services.contents import filemanager
 from jupyter_server.services.contents import manager
+from tiledb import cloud
 
 from . import arrays
+from . import async_tools
 from . import caching
 from . import listings
 from . import models
@@ -51,7 +51,7 @@ class AsyncTileDBCloudContentsManager(
             cloud = models.create(path="cloud", type="directory")
             if content:
                 cloud["format"] = "json"
-                cloud["content"] = await caching.call(listings.all_notebooks)
+                cloud["content"] = await async_tools.call(listings.all_notebooks)
 
                 cloud["last_modified"] = models.max_present(
                     models.to_utc(cat.get("last_modified")) for cat in cloud["content"]
@@ -62,10 +62,10 @@ class AsyncTileDBCloudContentsManager(
         category, namespace = paths.category_namespace(path)
         if category:
             if namespace:
-                return await caching.call(
+                return await async_tools.call(
                     listings.namespace, category, namespace, content=content
                 )
-            return await caching.call(listings.category, category, content=content)
+            return await async_tools.call(listings.category, category, content=content)
 
         return models.create(
             path=path,
@@ -81,7 +81,7 @@ class AsyncTileDBCloudContentsManager(
             if not paths.is_remote(path):
                 # If this isn't a remote path, get the local file contents.
                 model = await super().get(path, content, type, format)
-                if path == "" and content and await caching.call(_is_cloud_enabled):
+                if path == "" and content and await async_tools.call(_is_cloud_enabled):
                     # If we're at the root, and there's an existing entry
                     # named "cloud", remove it from the list.
                     file_list: List[models.Model] = model["content"]
@@ -91,7 +91,7 @@ class AsyncTileDBCloudContentsManager(
                             break
 
                     # Put our own "cloud" folder in.
-                    cloud_content = await caching.call(listings.all_notebooks)
+                    cloud_content = await async_tools.call(listings.all_notebooks)
                     file_list.append(
                         models.create(
                             path="cloud",
@@ -217,15 +217,10 @@ class AsyncTileDBCloudContentsManager(
             tiledb_uri = paths.tiledb_uri_from_path(path)
             try:
                 caching.Array.purge(tiledb_uri)
-                return await caching.call(tiledb.cloud.array.delete_array, tiledb_uri)
-            except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+                return await async_tools.call(cloud.array.delete_array, tiledb_uri)
+            except cloud.TileDBCloudError as e:
                 raise tornado.web.HTTPError(
                     500, f"Error deregistering {tiledb_uri!r}: {e}"
-                )
-            except tiledb.TileDBError as e:
-                raise tornado.web.HTTPError(
-                    500,
-                    str(e),
                 )
         return await super().delete_file(path)
 
@@ -244,16 +239,11 @@ class AsyncTileDBCloudContentsManager(
 
             try:
                 caching.Array.purge(tiledb_uri)
-                return await caching.call(
-                    tiledb.cloud.notebook.rename_notebook, tiledb_uri, array_name_new
+                return await async_tools.call(
+                    cloud.notebook.rename_notebook, tiledb_uri, array_name_new
                 )
-            except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+            except cloud.TileDBCloudError as e:
                 raise tornado.web.HTTPError(500, f"Error renaming {tiledb_uri!r}: {e}")
-            except tiledb.TileDBError as e:
-                raise tornado.web.HTTPError(
-                    500,
-                    str(e),
-                )
         return await super().rename_file(old_path, new_path)
 
     # ContentsManager API part 2: methods that have usable default
@@ -313,7 +303,7 @@ class AsyncTileDBCloudContentsManager(
         if paths.is_remote(path):
             if path.endswith(paths.NOTEBOOK_EXT):
                 path = path[: -1 * len(paths.NOTEBOOK_EXT)]
-            return await caching.call(arrays.exists, path)
+            return await async_tools.call(arrays.exists, path)
         return await super().file_exists(path)
 
     async def new_untitled(self, path="", type="", ext="", options=""):
@@ -421,10 +411,6 @@ class AsyncTileDBCloudContentsManager(
                 is_user_defined_name="name" in model,
                 is_new=model.get("tiledb:is_new", False),
             )
-        except tiledb.TileDBError as tdbe:
-            raise tornado.web.HTTPError(
-                500, f"Error saving notebook to TileDB array: {tdbe}"
-            ) from tdbe
         except Exception as ex:
             raise tornado.web.HTTPError(
                 500, f"Unexpected error saving notebook: {ex}"
@@ -441,7 +427,7 @@ class AsyncTileDBCloudContentsManager(
         if content:
             tiledb_uri = paths.tiledb_uri_from_path(path)
             try:
-                info = await caching.call(tiledb.cloud.array.info, tiledb_uri)
+                info = await async_tools.call(cloud.array.info, tiledb_uri)
                 model["last_modified"] = models.to_utc(info.last_accessed)
                 if "write" not in info.allowed_actions:
                     model["writable"] = False
@@ -459,14 +445,9 @@ class AsyncTileDBCloudContentsManager(
                 model["format"] = "json"
                 model["content"] = nb_content
                 self.validate_notebook_model(model)
-            except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+            except cloud.TileDBCloudError as e:
                 raise tornado.web.HTTPError(
                     400, "Error fetching notebook info: {}".format(str(e))
-                )
-            except tiledb.TileDBError as e:
-                raise tornado.web.HTTPError(
-                    400,
-                    "Error fetching notebook: {}".format(str(e)),
                 )
             except Exception as e:
                 raise tornado.web.HTTPError(
@@ -521,7 +502,7 @@ async def _file_from_array(
     if content:
         tiledb_uri = paths.tiledb_uri_from_path(path)
         try:
-            info = await caching.call(tiledb.cloud.array.info, tiledb_uri)
+            info = await async_tools.call(cloud.array.info, tiledb_uri)
             model["last_modified"] = models.to_utc(info.last_accessed)
             if "write" not in info.allowed_actions:
                 model["writable"] = False
@@ -558,14 +539,9 @@ async def _file_from_array(
                 # validate_notebook_model is an instance method that should
                 # really be a class method, since it never uses `self`.
                 manager.ContentsManager.validate_notebook_model(cast(Any, None), model)
-        except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+        except cloud.TileDBCloudError as e:
             raise tornado.web.HTTPError(
                 500, "Error fetching file info: {}".format(str(e))
-            )
-        except tiledb.TileDBError as e:
-            raise tornado.web.HTTPError(
-                500,
-                "Error fetching file: {}".format(str(e)),
             )
         except Exception as e:
             raise tornado.web.HTTPError(
@@ -743,11 +719,11 @@ def _is_cloud_enabled():
     """
 
     try:
-        profile = tiledb.cloud.client.user_profile()
+        profile = cloud.client.user_profile()
         if "notebook_sharing" in set(profile.enabled_features):
             return True
 
-    except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+    except cloud.TileDBCloudError as e:
         raise tornado.web.HTTPError(
             400,
             "Error fetching user default s3 path for new notebooks {}".format(str(e)),

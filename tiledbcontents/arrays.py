@@ -5,9 +5,10 @@ import time
 from typing import Optional, Tuple
 
 import numpy
-import tiledb.cloud
 import tornado.web
+from tiledb import cloud
 
+from . import async_tools
 from . import caching
 from . import paths
 
@@ -19,9 +20,9 @@ def exists(path: str) -> bool:
     """Checks if an array exists in TileDB Cloud."""
     tdb_uri = paths.tiledb_uri_from_path(path)
     try:
-        tiledb.cloud.array.info(tdb_uri)
+        cloud.array.info(tdb_uri)
         return True
-    except tiledb.cloud.TileDBCloudError:
+    except cloud.TileDBCloudError:
         pass
     return False
 
@@ -30,10 +31,8 @@ async def fetch_type(uri: str) -> Optional[str]:
     try:
         arr = caching.Array.from_cache(uri)
         meta = await arr.meta()
-    except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+    except cloud.TileDBCloudError as e:
         raise tornado.web.HTTPError(500, f"Error getting type: {e}") from e
-    except tiledb.TileDBError as e:
-        raise tornado.web.HTTPError(500, str(e)) from e
     except Exception as e:
         raise tornado.web.HTTPError(400, f"Error getting file type: {e}") from e
     return meta.get("type")
@@ -70,7 +69,7 @@ async def write_data(
     tiledb_uri = paths.tiledb_uri_from_path(path)
     final_array_name = None
     if is_new:
-        tiledb_uri, final_array_name = await caching.call(
+        tiledb_uri, final_array_name = await async_tools.call_external(
             create,
             tiledb_uri,
             retry=5,
@@ -104,6 +103,8 @@ def create(
         the given filename. False to indicate that it was generated.
     :return: A tuple of (the TileDB URI, the name of the array)
     """
+    import tiledb
+
     while True:
         try:
             parts = paths.split(path)
@@ -115,10 +116,10 @@ def create(
 
             if s3_credentials is None:
                 # Use the general cloud context by default.
-                tiledb_create_context = tiledb.cloud.Ctx()
+                tiledb_create_context = cloud.Ctx()
             else:
                 # update context with config having header set
-                tiledb_create_context = tiledb.cloud.Ctx(
+                tiledb_create_context = cloud.Ctx(
                     {
                         "rest.creation_access_credentials_name": s3_credentials,
                     }
@@ -200,7 +201,7 @@ def create(
             image_name = os.getenv(JUPYTER_IMAGE_NAME_ENV)
             if image_name is not None:
                 file_properties[
-                    tiledb.cloud.rest_api.models.FilePropertyName.IMAGE
+                    cloud.rest_api.models.FilePropertyName.IMAGE
                 ] = image_name
 
             # Get image size from env if exists
@@ -209,14 +210,14 @@ def create(
             image_size = os.getenv(JUPYTER_IMAGE_SIZE_ENV)
             if image_size is not None:
                 file_properties[
-                    tiledb.cloud.rest_api.models.FilePropertyName.SIZE
+                    cloud.rest_api.models.FilePropertyName.SIZE
                 ] = image_size
 
-            tiledb.cloud.array.update_info(uri=tiledb_uri, array_name=array_name)
+            cloud.array.update_info(uri=tiledb_uri, array_name=array_name)
 
-            tiledb.cloud.array.update_file_properties(
+            cloud.array.update_file_properties(
                 uri=tiledb_uri,
-                file_type=tiledb.cloud.rest_api.models.FileType.NOTEBOOK,
+                file_type=cloud.rest_api.models.FileType.NOTEBOOK,
                 # If file_properties is empty, don't send anything at all.
                 file_properties=file_properties or None,
             )
@@ -232,7 +233,7 @@ def create(
 
             if retry <= 0:
                 # We're out of retries.
-                raise
+                raise tornado.web.HTTPError(500, str(e)) from e
             retry -= 1
         except tornado.web.HTTPError:
             # HTTPErrors are all errors that we raise ourselves,
@@ -245,7 +246,7 @@ def create(
 def _namespace_s3_prefix(namespace: str) -> Optional[str]:
     """Fetches the default S3 path prefix from the user or organization profile."""
     try:
-        profile = tiledb.cloud.client.user_profile()
+        profile = cloud.client.user_profile()
 
         if namespace == profile.username:
             if (
@@ -256,7 +257,7 @@ def _namespace_s3_prefix(namespace: str) -> Optional[str]:
             if profile.default_s3_path is not None:
                 return paths.join(profile.default_s3_path, "notebooks")
             return None
-        organization = tiledb.cloud.client.organization(namespace)
+        organization = cloud.client.organization(namespace)
         if (
             organization.asset_locations.notebooks
             and organization.asset_locations.notebooks.path
@@ -265,7 +266,7 @@ def _namespace_s3_prefix(namespace: str) -> Optional[str]:
         if organization.default_s3_path is not None:
             return paths.join(organization.default_s3_path, "notebooks")
         return None
-    except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+    except cloud.TileDBCloudError as e:
         raise tornado.web.HTTPError(
             400, f"Error fetching user default s3 path for new notebooks {e}"
         ) from e
@@ -274,7 +275,7 @@ def _namespace_s3_prefix(namespace: str) -> Optional[str]:
 def _namespace_s3_credentials(namespace: str) -> Optional[str]:
     """Fetches the default S3 credentials from the user or organization profile."""
     try:
-        profile = tiledb.cloud.client.user_profile()
+        profile = cloud.client.user_profile()
 
         if namespace == profile.username:
             if (
@@ -283,14 +284,14 @@ def _namespace_s3_credentials(namespace: str) -> Optional[str]:
             ):
                 return profile.asset_locations.notebooks.credentials_name
             return profile.default_s3_path_credentials_name
-        organization = tiledb.cloud.client.organization(namespace)
+        organization = cloud.client.organization(namespace)
         if (
             organization.asset_locations.notebooks
             and organization.asset_locations.notebooks.credentials_name
         ):
             return organization.asset_locations.notebooks.credentials_name
         return organization.default_s3_path_credentials_name
-    except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+    except cloud.TileDBCloudError as e:
         raise tornado.web.HTTPError(
             400,
             f"Error fetching default credentials for {namespace!r} default "
