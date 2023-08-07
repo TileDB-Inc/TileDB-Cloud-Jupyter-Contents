@@ -6,7 +6,6 @@ import random
 import string
 from typing import List, Optional, Tuple
 
-
 NOTEBOOK_EXT = ".ipynb"
 _NB_NO_DOT = NOTEBOOK_EXT[1:]
 
@@ -14,7 +13,7 @@ _NB_NO_DOT = NOTEBOOK_EXT[1:]
 def maybe_trim_ipynb(path: str) -> str:
     """Removes ``.ipynb`` from the end of ``path``, if present."""
     if path.endswith(NOTEBOOK_EXT):
-        return path[:-len(NOTEBOOK_EXT)]
+        return path[: -len(NOTEBOOK_EXT)]
     return path
 
 

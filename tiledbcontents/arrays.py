@@ -118,11 +118,14 @@ def create(
                 tiledb_create_context = tiledb.cloud.Ctx()
             else:
                 # update context with config having header set
-                tiledb_create_context = tiledb.cloud.Ctx({
-                    "rest.creation_access_credentials_name": s3_credentials,
-                })
+                tiledb_create_context = tiledb.cloud.Ctx(
+                    {
+                        "rest.creation_access_credentials_name": s3_credentials,
+                    }
+                )
 
-            # The array will be be 1 dimensional with domain of 0 to max uint64. We use a tile extent of 1024 bytes
+            # The array will be be 1 dimensional with domain of 0 to max uint64.
+            # We use a tile extent of 1024 bytes.
             dom = tiledb.Domain(
                 tiledb.Dim(
                     name="position",
@@ -192,7 +195,8 @@ def create(
 
             file_properties = {}
             # Get image name from env if exists
-            # This is stored as a tag for TileDB Cloud for searching, filtering and launching
+            # This is stored as a tag for TileDB Cloud for searching, filtering,
+            # and launching.
             image_name = os.getenv(JUPYTER_IMAGE_NAME_ENV)
             if image_name is not None:
                 file_properties[
@@ -200,7 +204,8 @@ def create(
                 ] = image_name
 
             # Get image size from env if exists
-            # This is stored as a tag for TileDB Cloud for searching, filtering and launching
+            # This is stored as a tag for TileDB Cloud for searching, filtering,
+            # and launching.
             image_size = os.getenv(JUPYTER_IMAGE_SIZE_ENV)
             if image_size is not None:
                 file_properties[
@@ -219,7 +224,8 @@ def create(
             return tiledb_uri, array_name
         except tiledb.TileDBError as e:
             if "Error while listing with prefix" in str(e):
-                # It is possible to land here if user sets wrong default s3 credentials with respect to default s3 path
+                # It is possible to land here if user sets the wrong
+                # default credentials with respect to the default storage path.
                 raise tornado.web.HTTPError(
                     400, f"Error creating file: {e}. Are your credentials valid?"
                 ) from e
@@ -242,21 +248,26 @@ def _namespace_s3_prefix(namespace: str) -> Optional[str]:
         profile = tiledb.cloud.client.user_profile()
 
         if namespace == profile.username:
-            if profile.asset_locations.notebooks and profile.asset_locations.notebooks.path:
+            if (
+                profile.asset_locations.notebooks
+                and profile.asset_locations.notebooks.path
+            ):
                 return profile.asset_locations.notebooks.path
             if profile.default_s3_path is not None:
                 return paths.join(profile.default_s3_path, "notebooks")
             return None
         organization = tiledb.cloud.client.organization(namespace)
-        if organization.asset_locations.notebooks and organization.asset_locations.notebooks.path:
+        if (
+            organization.asset_locations.notebooks
+            and organization.asset_locations.notebooks.path
+        ):
             return organization.asset_locations.notebooks.path
         if organization.default_s3_path is not None:
             return paths.join(organization.default_s3_path, "notebooks")
         return None
     except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
         raise tornado.web.HTTPError(
-            400,
-            f"Error fetching user default s3 path for new notebooks {e}"
+            400, f"Error fetching user default s3 path for new notebooks {e}"
         ) from e
 
 
@@ -266,11 +277,17 @@ def _namespace_s3_credentials(namespace: str) -> Optional[str]:
         profile = tiledb.cloud.client.user_profile()
 
         if namespace == profile.username:
-            if profile.asset_locations.notebooks and profile.asset_locations.notebooks.credentials_name:
+            if (
+                profile.asset_locations.notebooks
+                and profile.asset_locations.notebooks.credentials_name
+            ):
                 return profile.asset_locations.notebooks.credentials_name
             return profile.default_s3_path_credentials_name
         organization = tiledb.cloud.client.organization(namespace)
-        if organization.asset_locations.notebooks and organization.asset_locations.notebooks.credentials_name:
+        if (
+            organization.asset_locations.notebooks
+            and organization.asset_locations.notebooks.credentials_name
+        ):
             return organization.asset_locations.notebooks.credentials_name
         return organization.default_s3_path_credentials_name
     except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:

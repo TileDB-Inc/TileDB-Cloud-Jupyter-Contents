@@ -49,8 +49,9 @@ def namespace(category: str, namespace: str, *, content: bool = False) -> models
             for notebook in arrays:
                 nbmodel = models.create(path=notebook.name)
 
-                # Add notebook extension to name, so jupyterlab will open with as a notebook
-                # It seems to check the extension even though we set the "type" parameter
+                # Add notebook extension to name, so jupyterlab will open this
+                # as a notebook. It seems to check the extension even though
+                # we set the "type" parameter.
                 nbmodel["path"] = "cloud/{}/{}/{}{}".format(
                     category, namespace, nbmodel["path"], paths.NOTEBOOK_EXT
                 )
@@ -201,7 +202,8 @@ def _all_notebooks_in(category: str) -> models.Model:
                 last_modified=models.to_utc(notebook.last_accessed),
             )
             nb_model["path"] = paths.join(
-                category, nb_model["path"] + paths.NOTEBOOK_EXT)
+                category, nb_model["path"] + paths.NOTEBOOK_EXT
+            )
             model["content"].append(nb_model)
             _maybe_update_last_modified(model, notebook)
     return model
