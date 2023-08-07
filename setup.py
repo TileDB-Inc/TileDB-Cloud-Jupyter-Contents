@@ -4,7 +4,8 @@
     TileDB JupyterLab Contents plugin
 """
 
-from setuptools import setup, find_namespace_packages
+from setuptools import find_namespace_packages
+from setuptools import setup
 
 NAME = "tiledbcontents"
 
@@ -30,7 +31,9 @@ REQUIRES = [
 
 setup(
     name=NAME,
-    description="TileDB Contents Plugin for storing Jupyterlab Notebooks in TileDB Arrays",
+    description="""
+        TileDB Contents Plugin for storing Jupyterlab Notebooks in TileDB Arrays
+    """,
     author_email="hello@tiledb.com",
     url="https://tiledb.com",
     keywords=["TileDB", "cloud", "jupyter", "notebook"],

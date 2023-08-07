@@ -7,12 +7,11 @@ import time
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Type, TypeVar
 
 import numpy as np
-
-from . import models
-
 import tiledb
 import tiledb.cloud
 from tiledb.cloud import client
+
+from . import models
 
 
 class Array:
@@ -178,7 +177,7 @@ class ArrayListing:
         category: str,
         namespace: Optional[str] = None,
     ) -> "ArrayListing":
-        """Fetches an ArrayListing from the cache, or constructs a new one if not present."""
+        """Fetches an ArrayListing from the cache, or constructs a new one if absent."""
         try:
             return cls._cache[category, namespace]
         except KeyError:
@@ -206,7 +205,8 @@ class ArrayListing:
                 file_type=[tiledb.cloud.rest_api.models.FileType.NOTEBOOK],
                 namespace=self.namespace,
                 async_req=True,
-                per_page=1_000_000,  # Seth this this to 1 million so we get all results back in a single request
+                # A huge number so we get everything back in one response.
+                per_page=1_000_000,
             )
             self.last_fetched = time.time()
 

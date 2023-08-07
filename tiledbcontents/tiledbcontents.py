@@ -4,17 +4,17 @@ import itertools
 import json
 import math
 import posixpath
-from typing import List, Optional
+from typing import Any, List, Optional, cast
 
 import jupyter_server.files.handlers as jsfh
-from jupyter_server.services.contents import filecheckpoints
-from jupyter_server.services.contents import filemanager
-from jupyter_server.services.contents import manager
 import nbformat
 import tiledb
 import tiledb.cloud
 import tornado.web
 import traitlets
+from jupyter_server.services.contents import filecheckpoints
+from jupyter_server.services.contents import filemanager
+from jupyter_server.services.contents import manager
 
 from . import arrays
 from . import caching
@@ -321,7 +321,8 @@ class AsyncTileDBCloudContentsManager(
         path must be a directory
         File extension can be specified.
         Use `new` to create files with a fully specified path (including filename).
-        options is a json string passed by the TileDB Prompt User Contents Jupyterlab notebook extension for additional notebook creation options
+        options is a json string passed by the TileDB Prompt User Contents
+        Jupyterlab notebook extension for additional notebook creation options
         """
         path = paths.strip(path)
         if not self.dir_exists(path):
@@ -479,7 +480,8 @@ class AsyncTileDBCloudContentsManager(
         """
         Guess the type of a file.
 
-        Taken from https://github.com/danielfrg/s3contents/blob/master/s3contents/genericmanager.py
+        Taken from
+        https://github.com/danielfrg/s3contents/blob/master/s3contents/genericmanager.py
 
         If allow_directory is False, don't consider the possibility that the
         file is a directory.
@@ -555,7 +557,7 @@ async def _file_from_array(
                 model["content"] = nb_content
                 # validate_notebook_model is an instance method that should
                 # really be a class method, since it never uses `self`.
-                manager.ContentsManager.validate_notebook_model(None, model)
+                manager.ContentsManager.validate_notebook_model(cast(Any, None), model)
         except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
             raise tornado.web.HTTPError(
                 500, "Error fetching file info: {}".format(str(e))
