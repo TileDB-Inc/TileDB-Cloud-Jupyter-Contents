@@ -2,8 +2,8 @@
 
 from typing import Any, List
 
-import tiledb.cloud
 import tornado.web
+from tiledb import cloud
 
 from . import caching
 from . import models
@@ -22,14 +22,9 @@ def namespace(category: str, namespace: str, *, content: bool = False) -> models
     try:
         listing = caching.ArrayListing.from_cache(category, namespace)
         arrays = listing.arrays()
-    except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+    except cloud.TileDBCloudError as e:
         raise tornado.web.HTTPError(
             500, "Error listing notebooks in {}: {}".format(namespace, str(e))
-        )
-    except tiledb.TileDBError as e:
-        raise tornado.web.HTTPError(
-            500,
-            str(e),
         )
     except Exception as e:
         raise tornado.web.HTTPError(
@@ -83,14 +78,9 @@ def category(category: str, *, content: bool = True) -> models.Model:
     arrays = []
     try:
         arrays = caching.ArrayListing.from_cache(category).arrays()
-    except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+    except cloud.TileDBCloudError as e:
         raise tornado.web.HTTPError(
             500, "Error listing notebooks in {}: {}".format(category, str(e))
-        )
-    except tiledb.TileDBError as e:
-        raise tornado.web.HTTPError(
-            500,
-            str(e),
         )
     except Exception as e:
         raise tornado.web.HTTPError(
@@ -109,7 +99,7 @@ def category(category: str, *, content: bool = True) -> models.Model:
             # listed below. This base listing is so users can create new
             # notebooks in any of the namespaces they are part of.
             try:
-                profile = tiledb.cloud.client.user_profile()
+                profile = cloud.client.user_profile()
                 namespace_model = models.create(
                     path=paths.join("cloud", category, profile.username),
                     type="directory",
@@ -130,15 +120,10 @@ def category(category: str, *, content: bool = True) -> models.Model:
 
                     namespaces[org.organization_name] = namespace_model
 
-            except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+            except cloud.TileDBCloudError as e:
                 raise tornado.web.HTTPError(
                     500,
                     "Error listing notebooks in {}: {}".format(category, str(e)),
-                )
-            except tiledb.TileDBError as e:
-                raise tornado.web.HTTPError(
-                    500,
-                    str(e),
                 )
             except Exception as e:
                 raise tornado.web.HTTPError(
@@ -173,12 +158,10 @@ def all_notebooks() -> List[models.Model]:
     """List all notebooks, across all categories."""
     try:
         return [_all_notebooks_in(cat) for cat in caching.CATEGORIES]
-    except tiledb.cloud.tiledb_cloud_error.TileDBCloudError as e:
+    except cloud.TileDBCloudError as e:
         raise tornado.web.HTTPError(
             500, f"Error building cloud notebook info: {e}"
         ) from e
-    except tiledb.TileDBError as e:
-        raise tornado.web.HTTPError(500, str(e)) from e
     except Exception as e:
         raise tornado.web.HTTPError(
             500, f"Error building cloud notebook info: {e}"

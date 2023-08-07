@@ -1,16 +1,14 @@
 """Tools to handle caching of TileDB arrays and listings."""
 
-import asyncio
 import datetime
-import functools
 import time
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Type, TypeVar
+from typing import Any, Dict, Optional, Sequence, Tuple, Type
 
 import numpy as np
-import tiledb
-import tiledb.cloud
+from tiledb import cloud
 from tiledb.cloud import client
 
+from . import async_tools
 from . import models
 
 
@@ -41,7 +39,7 @@ class Array:
         cls._cache.pop(uri, None)
 
     async def read(self) -> str:
-        contents, self._meta = await call(self._read_sync)
+        contents, self._meta = await async_tools.call_external(_read_sync, self._uri)
         return contents
 
     async def read_at(self, timestamp: datetime.datetime) -> str:
@@ -50,45 +48,15 @@ class Array:
         This method will NOT update the contents cache, since this is an old
         version of the array.
         """
-        contents, _ = await call(self._read_sync, timestamp)
+        contents, _ = await async_tools.call_external(_read_sync, self._uri, timestamp)
         return contents
 
-    def _read_sync(
-        self, timestamp: Optional[datetime.datetime] = None
-    ) -> Tuple[str, models.Model]:
-        with tiledb.open(
-            self._uri,
-            "r",
-            timestamp=_to_millis(timestamp),
-            ctx=tiledb.cloud.Ctx(),
-        ) as arr:
-            meta = dict(arr.meta.items())
-            try:
-                file_size = meta["file_size"]
-            except KeyError:
-                raise Exception(
-                    f"file_size metadata entry not present in {self._uri}"
-                    f" (existing keys: {set(meta)})"
-                )
-            np_contents: np.ndarray = arr[0:file_size]["contents"]
-        contents_bytes = np_contents.tobytes()
-        contents = contents_bytes.decode("utf-8")
-        return contents, meta
-
     async def meta(self) -> models.Model:
-        if self._meta is not None:
-            # We already have metadata.
-            return self._meta
-
-        # We need to load array metadata for the first time.
-        self._meta = await call(self._load_meta_sync)
-        assert self._meta is not None  # to shut up mypy
+        if self._meta is None:
+            # We need to load array metadata for the first time.
+            self._meta = await async_tools.call_external(_load_meta_sync, self._uri)
+            assert self._meta is not None  # to shut up mypy
         return dict(self._meta)  # Make a copy to avoid spooky action at a distance.
-
-    def _load_meta_sync(self) -> models.Model:
-        """Synchronously loads metadata."""
-        with tiledb.open(self._uri, ctx=tiledb.cloud.Ctx()) as arr:
-            return dict(arr.meta.items())
 
     async def write_data(
         self,
@@ -97,39 +65,83 @@ class Array:
     ) -> None:
         contents_bytes = contents.encode("utf-8")
         new_meta = {k: v for k, v in new_meta.items() if v}
-        await call(
-            self._write_sync,
+        await async_tools.call_external(
+            _write_sync,
+            self._uri,
             contents_bytes,
             new_meta,
         )
         # Ensure that we've already loaded metadata...
         await self.meta()
-        assert self._meta
+        assert self._meta is not None
         self._meta.update(new_meta)
 
-    def _write_sync(
-        self,
-        contents_bytes: bytes,
-        new_meta: Dict[str, Optional[str]],
-    ) -> None:
-        contents_arr = np.frombuffer(contents_bytes, dtype=np.uint8)
-        with tiledb.open(
-            self._uri,
-            mode="w",
-            ctx=tiledb.cloud.Ctx(),
-            timestamp=int(time.time() * 1000),
-        ) as arr:
-            arr[: len(contents_bytes)] = {"contents": contents_arr}
-            arr.meta["file_size"] = len(contents_bytes)
-            arr.meta.update(new_meta)
-
     async def timestamps(self) -> Sequence[datetime.datetime]:
-        return tuple(_from_millis(dt) for dt in await call(self._timestamps_sync))
+        return tuple(
+            _from_millis(dt)
+            for dt in await async_tools.call_external(_timestamps_sync, self._uri)
+        )
 
-    def _timestamps_sync(self) -> Sequence[int]:
-        frags = tiledb.array_fragments(self._uri)
-        # Timestamps are stored as (start, end), and we want the end.
-        return tuple(f.timestamp_range[1] for f in frags)
+
+def _read_sync(
+    uri: str, timestamp: Optional[datetime.datetime] = None
+) -> Tuple[str, Dict[str, Any]]:
+    import tiledb
+
+    with tiledb.open(
+        uri,
+        "r",
+        timestamp=_to_millis(timestamp),
+        ctx=cloud.Ctx(),
+    ) as arr:
+        meta = dict(arr.meta.items())
+        try:
+            file_size = meta["file_size"]
+        except KeyError:
+            raise Exception(
+                f"file_size metadata entry not present in {uri}"
+                f" (existing keys: {set(meta)})"
+            )
+        np_contents: np.ndarray = arr[0:file_size]["contents"]
+    contents_bytes = np_contents.tobytes()
+    contents = contents_bytes.decode("utf-8")
+    return contents, meta
+
+
+def _load_meta_sync(uri: str) -> Dict[str, Any]:
+    """Synchronously loads metadata."""
+    import tiledb
+
+    with tiledb.open(uri, ctx=cloud.Ctx()) as arr:
+        return dict(arr.meta.items())
+
+
+def _write_sync(
+    uri: str,
+    contents_bytes: bytes,
+    new_meta: Dict[str, Optional[str]],
+) -> None:
+    import tiledb
+
+    contents_arr = np.frombuffer(contents_bytes, dtype=np.uint8)
+    with tiledb.open(
+        uri,
+        mode="w",
+        ctx=cloud.Ctx(),
+        timestamp=int(time.time() * 1000),
+    ) as arr:
+        arr[: len(contents_bytes)] = {"contents": contents_arr}
+        arr.meta["file_size"] = len(contents_bytes)
+        arr.meta.update(new_meta)
+
+
+def _timestamps_sync(uri: str) -> Sequence[int]:
+    """Loads the end timestamps of the given array."""
+    import tiledb
+
+    frags = tiledb.array_fragments(uri)
+    # Timestamps are stored as (start, end), and we want the end.
+    return tuple(f.timestamp_range[1] for f in frags)
 
 
 def _to_millis(dt: Optional[datetime.datetime]) -> Optional[int]:
@@ -202,7 +214,7 @@ class ArrayListing:
                     f"must be one of {set(_CATEGORY_LOADERS.keys())}"
                 ) from None
             self._array_listing_future = loader(
-                file_type=[tiledb.cloud.rest_api.models.FileType.NOTEBOOK],
+                file_type=[cloud.rest_api.models.FileType.NOTEBOOK],
                 namespace=self.namespace,
                 async_req=True,
                 # A huge number so we get everything back in one response.
@@ -215,12 +227,3 @@ class ArrayListing:
     def arrays(self):
         result = self._fetch().get()
         return result and result.arrays
-
-
-_R = TypeVar("_R")
-
-
-async def call(__fn: Callable[..., _R], *args: Any, **kwargs: Any) -> _R:
-    """Calls ``__fn(*args, **kwargs)`` on an executor as to not block."""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, functools.partial(__fn, *args, **kwargs))
