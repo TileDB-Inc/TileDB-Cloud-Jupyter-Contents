@@ -1,0 +1,30 @@
+[project]
+name = "tiledbcontents"
+description = "JupyterLab plugin to store notebooks in TileDB Cloud"
+dynamic = ["version"]
+
+dependencies = [
+    "jupyter_server",
+    "nbformat",
+    "numpy",
+    "setuptools-scm-git-archive",
+    "setuptools-scm>=1.5.4",
+    "setuptools>=45",
+    "tiledb-cloud>=0.7.44",
+    "tiledb>=0.16.1, !=0.17.5",  # 0.17.5 has a terminal-opening bug.
+    "tornado",
+    "traitlets",
+]
+
+[build-system]
+requires = ["setuptools>=42", "wheel", "setuptools_scm>=6"]
+
+[tool.setuptools_scm]
+write_to = "tiledbcontents/version.py"
+
+[tool.ruff]
+extend-select = ["I"]
+
+[tool.ruff.isort]
+force-single-line = true
+single-line-exclusions = ["typing", "typing_extensions"]
