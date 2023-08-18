@@ -10,10 +10,12 @@ import os
 import pathlib
 import sys
 import tempfile
+from unittest import mock
 from asyncio import subprocess
-from typing import Callable, Optional, TypeVar
+from typing import Callable, NoReturn, Optional, TypeVar
 
 import cloudpickle
+import tiledb
 from typing_extensions import ParamSpec, Self
 
 _P = ParamSpec("_P")
@@ -118,3 +120,83 @@ class _CallClient:
                 # which means that the child process exited (i.e., crashed).
                 raise OSError("Failed to start TileDB communication process")
         return cls(child, sock_path)
+
+
+#
+# TileDB core poisoning, to preemptively avoid instantiating core objects.
+#
+
+
+def poison_tiledb() -> None:
+    """Breaks the TileDB core library to avoid creating TileDB objects.
+
+    Because ``forkpty`` does not fork safely (i.e., exec before anything other
+    than exec-related code runs in the forked process), we cannot afford to have
+    any TileDB core code running in this process, since TileDB core is not
+    fork-safe.  This "poisons" the core library so that if some stray code
+    *does* attempt to instantiate a TileDB object, the developer gets notified
+    immediately, rather than facing mysterious errors down the line.
+
+    This isn't perfect and is mostly intended to be a guard against accidentally
+    calling code that works with TileDB core from the tiledbcontents plugin.
+
+    Merely importing this module does NOT automatically poison TileDB.
+    """
+    global _tiledb_poisoned
+
+    if _tiledb_poisoned:
+        raise Exception("TileDB has already been poisoned")
+    _tiledb_poisoned = True
+    for p in _POISONS:
+        p.start()
+
+
+def restore_tiledb() -> None:
+    """Un-poisons the TileDB core library."""
+    global _tiledb_poisoned
+
+    if not _tiledb_poisoned:
+        raise Exception("TileDB is not poisoned")
+    for p in _POISONS:
+        p.stop()
+    _tiledb_poisoned = False
+
+
+class _MetaPoison(type):
+    """Metaclass to return errors getting class members of poisoned types.
+
+    This is used so that ``_Poison`` below immediately raises an exception
+    upon being accessed::
+
+        tiledb.SomeType = _Poison
+        # ... later ...
+
+        tiledb.SomeType.whatever
+        # -> This will raise an exception.
+    """
+    def __getattr__(self, _: str) -> NoReturn:
+        raise TypeError(
+            "Using TileDB Core in a thread with the TileDB Contents plugin "
+            "is not supported and will break terminals."
+        )
+
+
+class _Poison(metaclass=_MetaPoison):
+    """Immediately raises an exception on instantiation."""
+    def __new__(self, *_: object, **__: object) -> NoReturn:
+        raise TypeError(
+            "Using TileDB Core in a thread with the TileDB Contents plugin "
+            "is not supported and will break terminals."
+        )
+
+
+_POISONS = (
+    mock.patch.object(tiledb, "Array", new=_Poison),
+    mock.patch.object(tiledb.libtiledb, "Array", new=_Poison),
+    mock.patch.object(tiledb, "SparseArray", new=_Poison),
+    mock.patch.object(tiledb, "DenseArray", new=_Poison),
+    mock.patch.object(tiledb.group, "Group", new=_Poison),
+    mock.patch.object(tiledb, "Group", new=_Poison),
+)
+"""Mocks that will be activated when we want to poison TileDB."""
+_tiledb_poisoned = False

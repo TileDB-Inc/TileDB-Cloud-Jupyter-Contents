@@ -30,6 +30,10 @@ NOTEBOOK_MIME = "application/x-ipynb+json"
 class AsyncTileDBCloudContentsManager(
     filemanager.AsyncFileContentsManager, traitlets.HasTraits
 ):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        async_tools.poison_tiledb()
+
     # This makes the checkpoints get saved on this directory
     root_dir = traitlets.Unicode("./", config=True)
 
