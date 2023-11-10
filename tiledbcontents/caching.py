@@ -204,7 +204,7 @@ class ArrayListing:
             or self.last_fetched + _CACHE_SECS < time.time()
         )
 
-    def _fetch(self):
+    def _fetch(self, page: int = 1, per_page: int = 100):
         if self._should_fetch():
             try:
                 loader = _CATEGORY_LOADERS[self.category]
@@ -217,13 +217,33 @@ class ArrayListing:
                 file_type=[cloud.rest_api.models.FileType.NOTEBOOK],
                 namespace=self.namespace,
                 async_req=True,
-                # A huge number so we get everything back in one response.
-                per_page=1_000_000,
+                per_page=per_page,
+                page=page,
             )
             self.last_fetched = time.time()
 
         return self._array_listing_future
 
     def arrays(self):
-        result = self._fetch().get()
-        return result and result.arrays
+        page = 1
+        result = self._fetch(page=page).get()
+        arrays = []
+        if result:
+            arrays = result.arrays
+            total_pages = result.pagination_metadata.total_pages
+            if total_pages > 1:
+                for i in range(2, total_pages+1):
+                    result = self._fetch(page=i)
+                    if result and result.arrays:
+                        arrays + result.arrays
+
+        return arrays
+
+
+_R = TypeVar("_R")
+
+
+async def call(__fn: Callable[..., _R], *args: Any, **kwargs: Any) -> _R:
+    """Calls ``__fn(*args, **kwargs)`` on an executor as to not block."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, functools.partial(__fn, *args, **kwargs))
