@@ -1,8 +1,10 @@
 """Tools to handle caching of TileDB arrays and listings."""
 
+from concurrent import futures
 import datetime
+import functools
 import time
-from typing import Any, Dict, Optional, Sequence, Tuple, Type
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type
 
 import numpy as np
 from tiledb import cloud
@@ -179,6 +181,9 @@ class ArrayListing:
         self.namespace = namespace
         self._array_listing_future = None
         self.last_fetched: Optional[float] = None
+        self._executor = futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="array-cache-"
+        )
 
     # A global cache of ArrayListings by category.
     _cache: Dict[Tuple[str, Optional[str]], "ArrayListing"] = {}
@@ -204,7 +209,7 @@ class ArrayListing:
             or self.last_fetched + _CACHE_SECS < time.time()
         )
 
-    def _fetch(self):
+    def _maybe_fetch(self):
         if self._should_fetch():
             try:
                 loader = _CATEGORY_LOADERS[self.category]
@@ -213,17 +218,30 @@ class ArrayListing:
                     f"Invalid category name {self.category!r}; "
                     f"must be one of {set(_CATEGORY_LOADERS.keys())}"
                 ) from None
-            self._array_listing_future = loader(
+            partial = functools.partial(
+                loader,
                 file_type=[cloud.rest_api.models.FileType.NOTEBOOK],
                 namespace=self.namespace,
-                async_req=True,
-                # A huge number so we get everything back in one response.
-                per_page=1_000_000,
             )
+            self._array_listing_future = self._executor.submit(_load_paginated, partial)
+
             self.last_fetched = time.time()
 
+        assert self._array_listing_future
         return self._array_listing_future
 
     def arrays(self):
-        result = self._fetch().get()
-        return result and result.arrays
+        return self._maybe_fetch().result()
+
+
+_PER_PAGE = 100
+
+
+def _load_paginated(partial: Callable[..., Any]) -> List[object]:
+    first_result = partial(page=1, per_page=_PER_PAGE)
+    everything = list(first_result.arrays)
+    total_pages = int(first_result.pagination_metadata.total_pages)
+    for subsequent in range(1, total_pages):
+        next_result = partial(page=subsequent + 1, per_page=_PER_PAGE)
+        everything.extend(next_result.arrays)
+    return everything
