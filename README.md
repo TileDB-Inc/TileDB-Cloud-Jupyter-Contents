@@ -4,7 +4,6 @@ This package contains a [juypterlab contents](https://jupyter-notebook.readthedo
 plugin to allow storing jupyter notebooks as TileDB arrays on TileDB Cloud. It also supports local filesystem access so
 you can store notebooks locally as traditional json files or on the cloud as TileDB Arrays.
 
-Currently only python 3.7 is supported.
 
 ## Usage
 
