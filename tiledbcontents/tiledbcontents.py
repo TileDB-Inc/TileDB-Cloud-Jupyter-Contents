@@ -1,5 +1,6 @@
 import base64
 import datetime
+import hashlib
 import itertools
 import json
 import math
@@ -78,7 +79,9 @@ class AsyncTileDBCloudContentsManager(
             # created=models.DUMMY_DATE,
         )
 
-    async def get(self, path, content=True, type=None, format=None):
+    async def get(
+        self, path, content=True, type=None, format=None, require_hash: bool = False
+    ):
         """Get a file or directory model."""
         path = paths.strip(path)
         try:
@@ -110,31 +113,43 @@ class AsyncTileDBCloudContentsManager(
 
                 return model
 
-            if path.endswith(paths.NOTEBOOK_EXT):
-                path = path[: -1 * len(paths.NOTEBOOK_EXT)]
-
             if type is None:
                 if paths.is_remote_dir(path):
                     type = "directory"
                 else:
                     type = await self.guess_type(path, allow_directory=True)
 
+
+
             if type == "notebook":
+                path = path.removesuffix(paths.NOTEBOOK_EXT)
                 return models.fill_in_dates(
-                    await self._notebook_from_array(path, content=content)
+                    await self._notebook_from_array(
+                        path,
+                        content=content,
+                        require_hash=require_hash,
+                    )
                 )
             if type == "file":
                 return models.fill_in_dates(
-                    await _file_from_array(self, path, content=content, format=format)
+                    await _file_from_array(
+                        self,
+                        path,
+                        content=content,
+                        require_hash=require_hash,
+                        format=format,
+                    )
                 )
             if type == "directory":
                 return models.fill_in_dates(
                     await self._dir_model(path, content=content)
                 )
+        except tornado.web.HTTPError:
+            raise
         except Exception as e:
             raise tornado.web.HTTPError(
                 500, "Error opening notebook {}: {}".format(path, str(e))
-            )
+            ) from e
 
     async def save(self, model, path=""):
         """
@@ -305,9 +320,8 @@ class AsyncTileDBCloudContentsManager(
         """
         path = paths.strip(path)
         if paths.is_remote(path):
-            if path.endswith(paths.NOTEBOOK_EXT):
-                path = path[: -1 * len(paths.NOTEBOOK_EXT)]
-            return await async_tools.call(arrays.exists, path)
+            path = path.removesuffix(paths.NOTEBOOK_EXT)
+            return await arrays.ArrayHandle.from_path(path).exists()
         return await super().file_exists(path)
 
     async def new_untitled(self, path="", type="", ext="", options=""):
@@ -326,7 +340,7 @@ class AsyncTileDBCloudContentsManager(
         if type:
             model["type"] = type
 
-        if ext == ".ipynb":
+        if ext == paths.NOTEBOOK_EXT:
             model.setdefault("type", "notebook")
         else:
             model.setdefault("type", "file")
@@ -351,7 +365,7 @@ class AsyncTileDBCloudContentsManager(
             prefix = self.untitled_directory
         elif model["type"] == "notebook":
             prefix = model.get("name", self.untitled_notebook)
-            ext = ".ipynb"
+            ext = paths.NOTEBOOK_EXT
         elif model["type"] == "file":
             prefix = self.untitled_file
         else:
@@ -404,7 +418,7 @@ class AsyncTileDBCloudContentsManager(
         self.check_and_sign(nb_contents, path)
 
         try:
-            final_name = await arrays.write_data(
+            final_name = await arrays.write_or_create(
                 path,
                 json.dumps(model["content"]),
                 mimetype=model.get("mimetype"),
@@ -423,32 +437,33 @@ class AsyncTileDBCloudContentsManager(
         self.validate_notebook_model(model)
         return final_name, model.get("message")
 
-    async def _notebook_from_array(self, path, content=True):
+    async def _notebook_from_array(
+        self, path: str, content: bool = True, require_hash: bool = False
+    ) -> models.Model:
         """
         Build a notebook model from database record.
         """
         model = models.create(path=path, type="notebook")
-        if content:
-            tiledb_uri = paths.tiledb_uri_from_path(path)
+        array = arrays.ArrayHandle.from_path(path)
+        update_ft = array.model_updates()
+        load_contents = content or require_hash
+        if load_contents:
             try:
-                info = await async_tools.call(cloud.array.info, tiledb_uri)
-                model["last_modified"] = models.to_utc(info.last_accessed)
-                if "write" not in info.allowed_actions:
-                    model["writable"] = False
-
-                arr = caching.Array.from_cache(tiledb_uri)
-
-                nb_content = []
-                file_content = await arr.read()
+                file_content, _ = await array.read_at(include_content=True)
                 if file_content is not None:
-                    nb_content = nbformat.reads(
-                        file_content,
-                        as_version=NBFORMAT_VERSION,
-                    )
-                    self.mark_trusted_cells(nb_content, path)
-                model["format"] = "json"
-                model["content"] = nb_content
-                self.validate_notebook_model(model)
+                    hash = hashlib.sha256(file_content)
+                    model["hash"] = hash.hexdigest()
+                    model["hash_algorithm"] = "sha256"
+                    # Only include the content if we were asked to do so.
+                    if content:
+                        nb_content = nbformat.reads(
+                            file_content,
+                            as_version=NBFORMAT_VERSION,
+                        )
+                        self.mark_trusted_cells(nb_content, path)
+                        model["format"] = "json"
+                        model["content"] = nb_content
+                        self.validate_notebook_model(model)
             except cloud.TileDBCloudError as e:
                 raise tornado.web.HTTPError(
                     400, "Error fetching notebook info: {}".format(str(e))
@@ -458,7 +473,7 @@ class AsyncTileDBCloudContentsManager(
                     400,
                     "Error fetching notebook: {}".format(str(e)),
                 )
-
+        model.update(await update_ft)
         return model
 
     async def guess_type(self, path, allow_directory=True):
@@ -478,15 +493,14 @@ class AsyncTileDBCloudContentsManager(
         if paths.is_remote(path):
             if paths.is_remote_dir(path):
                 return "directory"
-            else:
-                try:
-                    tiledb_uri = paths.tiledb_uri_from_path(path)
-                    return await arrays.fetch_type(tiledb_uri)
-                except Exception:
-                    return "directory"
+            if path.endswith(paths.NOTEBOOK_EXT):
+                return "notebook"
+            try:
+                tiledb_uri = paths.tiledb_uri_from_path(path)
+                return await arrays.fetch_type(tiledb_uri)
+            except Exception:
+                return "directory"
 
-        if path.endswith(".ipynb"):
-            return "notebook"
         if allow_directory and await self.dir_exists(path):
             return "directory"
         return "file"
@@ -498,23 +512,17 @@ async def _file_from_array(
     *,
     timestamp: Optional[datetime.datetime] = None,
     content: bool = True,
+    require_hash: bool = False,
     format: Optional[str] = None,
 ) -> models.Model:
     """Turns an array into a notebook/file model."""
     model = models.create(path=path, type="file")
 
     if content:
-        tiledb_uri = paths.tiledb_uri_from_path(path)
+        arr = arrays.ArrayHandle.from_path(path)
         try:
-            info = await async_tools.call(cloud.array.info, tiledb_uri)
-            model["last_modified"] = models.to_utc(info.last_accessed)
-            if "write" not in info.allowed_actions:
-                model["writable"] = False
-
-            arr = caching.Array.from_cache(tiledb_uri)
-
-            # Use cached meta, only file_size is ever updated
-            meta = await arr.meta()
+            updates_ft = arr.model_updates()
+            contents, meta = await arr.read_at(timestamp)
             # Get metadata information
             if "mimetype" in meta:
                 model["mimetype"] = meta["mimetype"]
@@ -526,10 +534,12 @@ async def _file_from_array(
             if "type" in meta:
                 model["type"] = meta["type"]
 
-            if timestamp:
-                model["content"] = await arr.read_at(timestamp)
-            else:
-                model["content"] = await arr.read()
+            if contents is not None:
+                hash_val = hashlib.sha256(contents)
+                model["hash"] = hash_val.hexdigest()
+                model["hash_algorithm"] = "sha256"
+                model["content"] = contents.decode("utf-8")
+            model.update(await updates_ft)
 
             if meta.get("type") == "notebook":
                 nb_content = nbformat.reads(
@@ -605,9 +615,8 @@ class AsyncTileDBCheckpoints(filecheckpoints.AsyncGenericFileCheckpoints):
         """
         if paths.is_remote(path):
             path = paths.maybe_trim_ipynb(path)
-            tdb_uri = paths.tiledb_uri_from_path(path)
-            arr = caching.Array.from_cache(tdb_uri)
-            timestamps = await arr.timestamps()
+            array = arrays.ArrayHandle.from_path(path)
+            timestamps = await array.timestamps()
             offset = iter(timestamps)
             next(offset)  # Eat one offset.
             return [
