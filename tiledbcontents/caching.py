@@ -239,9 +239,9 @@ _PER_PAGE = 100
 
 def _load_paginated(partial: Callable[..., Any]) -> List[object]:
     first_result = partial(page=1, per_page=_PER_PAGE)
-    everything = list(first_result.arrays)
+    everything = list(first_result.arrays or ())
     total_pages = int(first_result.pagination_metadata.total_pages)
     for subsequent in range(1, total_pages):
         next_result = partial(page=subsequent + 1, per_page=_PER_PAGE)
-        everything.extend(next_result.arrays)
+        everything.extend(next_result.arrays or ())
     return everything
