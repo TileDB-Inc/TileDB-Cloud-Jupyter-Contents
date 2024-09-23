@@ -5,6 +5,9 @@ import json
 import math
 import posixpath
 from typing import Any, List, Optional, cast
+import os
+
+from anyio.to_thread import run_sync
 
 import jupyter_server.files.handlers as jsfh
 import nbformat
@@ -156,8 +159,12 @@ class AsyncTileDBCloudContentsManager(
             raise tornado.web.HTTPError(
                 400, "Unhandled contents type: %s" % model["type"]
             )
+        
 
         if not paths.is_remote(path):
+            if "chunk" in model:
+                return await self._save_large_file_in_chunks(model, path)
+
             if model.get("tiledb:is_new"):
                 # Since we don't try to increment the filename in self.new(),
                 # do it here for newly-created files.
@@ -210,6 +217,65 @@ class AsyncTileDBCloudContentsManager(
         if validation_message is not None:
             model["message"] = validation_message
         return model
+
+    async def _save_large_file_in_chunks(self, model, path=""):
+        """Save the file model and return the model with no content."""
+        chunk = model.get("chunk", None)
+        if chunk is not None:
+            path = path.strip("/")
+
+            if chunk == 1:
+                self.run_pre_save_hooks(model=model, path=path)
+
+            os_path = self._get_os_path(path)
+            if chunk == -1:
+                self.log.debug(f"Saving last chunk of file {os_path}")
+            else:
+                self.log.debug(f"Saving chunk {chunk} of file {os_path}")
+
+            try:
+                if chunk == 1:
+                    await super()._save_file(os_path, model["content"], model.get("format"))
+                else:
+                    await self._save_large_file(os_path, model["content"], model.get("format"))
+            except tornado.web.HTTPError:
+                raise
+            except Exception as e:
+                self.log.error("Error while saving file: %s %s", path, e, exc_info=True)
+                raise tornado.web.HTTPError(500, f"Unexpected error while saving file: {path} {e}") from e
+
+            model = await self.get(path, content=False)
+
+            # Last chunk
+            if chunk == -1:
+                self.run_post_save_hooks(model=model, os_path=os_path)
+
+            self.emit(data={"action": "save", "path": path})
+            return model
+        else:
+            return await super().save(model, path)
+
+    async def _save_large_file(self, os_path, content, format):
+        """Save content of a generic file."""
+        if format not in {"text", "base64"}:
+            raise tornado.web.HTTPError(
+                400,
+                "Must specify format of file contents as 'text' or 'base64'",
+            )
+        try:
+            if format == "text":
+                bcontent = content.encode("utf8")
+            else:
+                b64_bytes = content.encode("ascii")
+                bcontent = base64.b64decode(b64_bytes)
+        except Exception as e:
+            raise tornado.web.HTTPError(400, f"Encoding error saving {os_path}: {e}") from e
+
+        with self.perm_to_403(os_path):
+            if os.path.islink(os_path):
+                os_path = os.path.join(os.path.dirname(os_path), os.readlink(os_path))
+            with open(os_path, "ab") as f:  # noqa: ASYNC101
+                await run_sync(f.write, bcontent)
 
     async def delete_file(self, path):
         """Delete the file or directory at path."""
