@@ -27,6 +27,7 @@ REQUIRES = [
     "tiledb>=0.16.1, !=0.17.5",  # 0.17.5 has a terminal-opening bug.
     "tornado",
     "traitlets",
+    "typing-extensions~=4.0"
 ]
 
 setup(
